@@ -1,9 +1,24 @@
+from typing import Callable, Any, List, Dict
 import cv2
 import numpy as np
 import pandas as pd
 
-def read_solution(filename: str) -> pd.DataFrame:
-    return pd.read_csv("sample_data_solutions/" + filename)
+def create_solutions_dict(
+        file_path: str
+) -> Dict[str, int]:
+    solutions = pd.read_csv(file_path)
+    solutions_dict = {}
+    for i, row in solutions.iterrows():
+        # Drop rows that don't have a geonames id.
+        # This happens when there is a place name in the relevant pdf that has been manually found,
+        # but with no record in the geonames database.
+        # This can happen if the location is very obscure or if it is a historic location etc.
+        # For all purposes, we do not consider these when determining accuracy.
+        if row["geonameid"] == -1:
+            # solutions.drop(i, inplace=True)
+            continue
+        solutions_dict[row["name"]] = row["geonameid"]
+    return solutions_dict
 
 # Deskew image for ocr parse.
 def deskew(image):
