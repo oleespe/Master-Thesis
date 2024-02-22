@@ -1,4 +1,4 @@
-from typing import Callable, Any, List, Dict
+from typing import Callable, Any, List, Dict, Tuple
 from elasticsearch import Elasticsearch
 from elasticsearch_dsl import Search
 import numpy as np
@@ -7,6 +7,7 @@ import spacy
 import PyPDF2
 import pytesseract
 from helpers import *
+
 
 def geoparse_pdf(
         file_path: str,
@@ -49,45 +50,46 @@ def ocr_parse(
 
 def geoparse(
         text: str
-) -> Dict[str, Any]:
-    data = {}
+) -> List[Dict[str, Any]]:
+    locations_data = []
     nlp = spacy.load("nb_core_news_lg")
     doc = nlp(text)
-    places = [[ent.text.strip(), ent.label_] for ent in doc.ents if ent.label_ in ["GPE", "LOC", "GPE_LOC", "GPE_ORG"]]
-    for place in places:
-        name = place[0]
-
-        # TODO: This currently assumes that every mention of a place with the same name refers to the same name,
-        # but you could have places with the same name in a text refer to different places. How do we handle this?
-        # Check if place has already been added
-        if name in data:
-            continue
+    entities = [ent for ent in doc.ents if ent.label_ in ["GPE", "LOC", "GPE_LOC", "GPE_ORG"]]
+    for entity in entities:
+        entity_name = entity.text.strip()
 
         # Check for names that are obviously not places
-        if name.isspace() or name.islower():
+        if entity_name.isspace() or entity_name.islower():
             continue
         
-        data[name] = {"label": place[1]}
+        locations_data.append({
+            "entity_name": entity_name,
+            "label": entity.label_, 
+            "start_char": entity.start_char, 
+            "end_char": entity.end_char,
+            "adj_entities": [],
+            "candidates": [],
+            "best_candidate": None
+            })
 
     es = Elasticsearch("http://localhost:9200")
     s = Search(using=es, index="geonames")
+    entity_names = [location["entity_name"] for location in locations_data]
 
-    # Iterate through found place names and query ES.
-    for key, _ in data.items():
-        candidates = find_candidates(s, key)
-        if len(candidates) == 0:
-            data[key]["candidates"] = None
-            data[key]["best_candidate"] = None
-            continue
-        data[key]["candidates"] = candidates
-        data[key]["best_candidate"] = rank(candidates)
+    # Iterate through found place names.
+    for location in locations_data:
+        location["candidates"] = find_candidates(s, location["entity_name"])
+        if len(location["candidates"]) != 0:
+            location["best_candidate"] = rank(location["candidates"])
+        adjacency_features = find_adjacency_features(location, entity_names, text)
+        location["adj_entities"] = adjacency_features["adj_entities"]
         
-    return data
+    return locations_data
 
 def find_candidates(
         s: Search,
         place_name: str
-) -> Dict[str, Any]:
+) -> List[Dict[str, Any]]:
     # Difficulties:
     # 1. We generally want to rank the highest scoring results, i.e., the ones whose name most closely resembles the retrieved place name.
     # A problem with this can be found in found entities such as "Norge", whose name in geonames is "Kingdom of Norway". 
@@ -101,7 +103,8 @@ def find_candidates(
     q = {
         "multi_match": {
             "query": place_name,
-            "fields": ["name", "asciiname", "alternatenames"]
+            "fields": ["name", "asciiname", "alternatenames"],
+            "type": "phrase" # (type: phrase) ensures that the entire place name is present. Without it, a query for a place name like "Rio de Janeiro" would also return any place with "Rio" in it.
         }
     }
 
@@ -114,13 +117,51 @@ def find_candidates(
     return [result.to_dict() for result in q_results if result["name"] == place_name or result["asciiname"] == place_name or place_name in result["alternatenames"]]
 
     # TODO: If place name is not in "name", "asciiname" or "alternatenames", we currently return nothing.
-    # Might be worth looking into geonames "Fuzzy search" feature.
+
+def find_features():
+    # Need to find features for retrieved location entities, as this will most likely be useful regardless of the approach taken to improve ranking algorithm.
+    # 1. Some form of hierarchy. Is the place a country or adm1 etc...
+    # 2. Check for adjacent words such as "gård/gården", "kirke" or "by/byen". Should also check for suffixes such as "fjellet/fjell/fjellene" or "Tunell".
+    # 3. Check for adjacent words that are other entities, i.e., "Trondheim i Trøndelag"
+
+    # Should these features be used when finding candidates or only for ranking them?
+    # Some features are also probably on a document level, for example figuring out which countries are relevant.
+
+    pass
+
+def find_adjacency_features(
+        location: Dict[str, Any],
+        entity_names: List[str],
+        text: str,
+        width: int = 3
+) -> Dict[str, Any]:
+    adjacency_features = {"adj_entities": []}
+    start_window, end_window = width*50, width*50
+    if start_window > location["start_char"]: start_window = location["start_char"]
+    if end_window > len(text) - location["end_char"]: end_window = len(text) - location["end_char"]
+
+    prev_split = text[location["start_char"]-start_window:location["start_char"]].split()
+    next_split = text[location["end_char"]:end_window+location["end_char"]].split()
+    prev_text, next_text = [], []
+    if len(prev_split) < width: prev_text = prev_split
+    else: prev_text = prev_split[-width:]
+    if len(next_split) < width: next_text = next_split
+    else: next_text = next_split[:width]
+
+    for word in prev_text + next_text:
+        word = word.strip(";:-., ")
+        # TODO: This currently does not handle entities with multiple words, e.g., "Fredriksten festning".
+        # Can potentially be solved with ngrams or something similar.
+        if word in entity_names:
+            adjacency_features["adj_entities"].append(word)
+        
+    return adjacency_features
 
 def rank(
         candidates: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
     # Initial baseline approach:
-    # Select candidate with most alternate names
+    # Select candidate with the most alternate names
 
     n_alt_names = 0
     index = 0
@@ -135,16 +176,19 @@ def rank(
 
 def analyze_performance(
         file_path: str,
-        geoparse_result: Dict[str, Any]
-):
+        locations_data: List[Dict[str, Any]]
+):  
+    # TODO: Needs to be fixed to actually support multiple entries of same entity.
+    return
     solutions_dict = create_solutions_dict(file_path)
     
     # P0 and P1 performance
-    matching_placenames = {key: value for key, value in geoparse_result.items() if key in solutions_dict} # Place names present in both solution and found through NER
-    excess_placenames = [key for key, _ in geoparse_result.items() if key not in solutions_dict] # Place names found through NER, but not in solution
+    # matching_placenames = {key: value for key, value in geoparse_result.items() if key in solutions_dict} # Place names present in both solution and found through NER
+    matching_placenames = [location for location in locations_data if location["entity_name"] in solutions_dict and location["entity_name"] not in matching_placenames] # Place names present in both solution and found through NER
+    excess_placenames = [key for key, _ in locations_data.items() if key not in solutions_dict] # Place names found through NER, but not in solution
     missing_placenames = [key for key, _ in solutions_dict.items() if key not in matching_placenames] # Place names present in solution but not found through NER
     print(f"Pdf place names: {len(solutions_dict)} \
-          \nTotal found place names: {len(geoparse_result)}, excess: {excess_placenames} \
+          \nTotal found place names: {len(locations_data)}, excess: {excess_placenames} \
           \nMatching place names: {len(matching_placenames)}, missing: {missing_placenames}")
     
     # P2 performance
@@ -169,22 +213,24 @@ def analyze_performance(
     print(f"Correct best candidates: {len(matching_placenames) - len(incorrect_best_candidate)}, missing: {incorrect_best_candidate}")
 
 def print_mappings(
-        geoparse_result: Dict[str, Any]
+        locations_data: List[Dict[str, Any]]
 ):
-    for key, value in geoparse_result.items():
-        if value['best_candidate'] is None:
-            print(f"{key} -> None")
+    for location in locations_data:
+        if location['best_candidate'] is None:
+            print(f"{location['entity_name']} -> None")
             continue
-        print(f"{key} -> ({value['best_candidate']['name']}, {value['best_candidate']['geonameid']}, {value['best_candidate']['country_code']}, {value['best_candidate']['coordinates']})")
+        print(f"{location['entity_name']} -> ({location['best_candidate']['name']}, {location['best_candidate']['geonameid']}, {location['best_candidate']['country_code']}, {location['best_candidate']['coordinates']})")
 
 def print_solutions_mappings(
         file_path: str,
-        geoparse_result: Dict[str, Any],
+        locations_data: List[Dict[str, Any]],
 ):
+    # TODO: Needs to be fixed to actually support multiple entries of same entity.
+    return
     solutions_dict = create_solutions_dict(file_path)
-    matching_placenames = {key: value for key, value in geoparse_result.items() if key in solutions_dict}
+    matching_placenames = {key: value for key, value in locations_data.items() if key in solutions_dict}
     for key, value in solutions_dict.items():
-        if key not in geoparse_result:
+        if key not in locations_data:
             print(f"({key}, {value}) -> None")
             continue
         print(f"({key}, {value}) -> ({matching_placenames[key]['best_candidate']['name']}, {matching_placenames[key]['best_candidate']['geonameid']})")
