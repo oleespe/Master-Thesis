@@ -1,5 +1,7 @@
 test*
+geonames_indexer_mordecai.py
 
 /__pycache__
 /es/data
 /sample_data
+/*env

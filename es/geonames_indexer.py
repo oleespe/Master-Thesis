@@ -2,7 +2,7 @@ from elasticsearch import Elasticsearch, helpers
 from tqdm import tqdm
 import csv
 
-INDEX_NAME = "geonames"
+INDEX_NAME = "geonames_custom"
 INDEX_SETTINGS = {
     "mappings": {
         "properties": {

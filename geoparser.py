@@ -7,6 +7,7 @@ import spacy
 import PyPDF2
 import pytesseract
 from helpers import *
+from lists import *
 
 
 def geoparse_pdf(
@@ -73,16 +74,16 @@ def geoparse(
             })
 
     es = Elasticsearch("http://localhost:9200")
-    s = Search(using=es, index="geonames")
+    s = Search(using=es, index="geonames_custom")
     entity_names = [location["entity_name"] for location in locations_data]
 
     # Iterate through found place names.
     for location in locations_data:
         location["candidates"] = find_candidates(s, location["entity_name"])
         if len(location["candidates"]) != 0:
-            location["best_candidate"] = rank(location["candidates"])
-        adjacency_features = find_adjacency_features(location, entity_names, text)
-        location["adj_entities"] = adjacency_features["adj_entities"]
+            location["best_candidate"] = rank_baseline(location["candidates"])
+        # adjacency_features = find_adjacency_features(location, entity_names, text)
+        # location["adj_entities"] = adjacency_features["adj_entities"]
         
     return locations_data
 
@@ -108,8 +109,7 @@ def find_candidates(
         }
     }
 
-    # TODO: This needs to be replaced with a proper solution.
-    if place_name == "Sverige" or place_name == "Norge":
+    if place_name in COUNTRY_NAMES:
         q_results = s.filter("term", feature_code="PCLI").query(q)[0:5].execute() # Should in theory only ever return one value anyways?
         return [q_results.to_dict()["hits"]["hits"][0]["_source"]]
 
@@ -129,35 +129,122 @@ def find_features():
 
     pass
 
-def find_adjacency_features(
-        location: Dict[str, Any],
-        entity_names: List[str],
-        text: str,
-        width: int = 3
-) -> Dict[str, Any]:
-    adjacency_features = {"adj_entities": []}
-    start_window, end_window = width*50, width*50
-    if start_window > location["start_char"]: start_window = location["start_char"]
-    if end_window > len(text) - location["end_char"]: end_window = len(text) - location["end_char"]
+# def find_adjacency_features(
+#         location: Dict[str, Any],
+#         entity_names: List[str],
+#         text: str,
+#         width: int = 3
+# ) -> Dict[str, Any]:
+#     adjacency_features = {"adj_entities": []}
+#     start_window, end_window = width*50, width*50
+#     if start_window > location["start_char"]: start_window = location["start_char"]
+#     if end_window > len(text) - location["end_char"]: end_window = len(text) - location["end_char"]
 
-    prev_split = text[location["start_char"]-start_window:location["start_char"]].split()
-    next_split = text[location["end_char"]:end_window+location["end_char"]].split()
-    prev_text, next_text = [], []
-    if len(prev_split) < width: prev_text = prev_split
-    else: prev_text = prev_split[-width:]
-    if len(next_split) < width: next_text = next_split
-    else: next_text = next_split[:width]
+#     prev_split = text[location["start_char"]-start_window:location["start_char"]].split()
+#     next_split = text[location["end_char"]:end_window+location["end_char"]].split()
+#     prev_text, next_text = [], []
+#     if len(prev_split) < width: prev_text = prev_split
+#     else: prev_text = prev_split[-width:]
+#     if len(next_split) < width: next_text = next_split
+#     else: next_text = next_split[:width]
 
-    for word in prev_text + next_text:
-        word = word.strip(";:-., ")
-        # TODO: This currently does not handle entities with multiple words, e.g., "Fredriksten festning".
-        # Can potentially be solved with ngrams or something similar.
-        if word in entity_names:
-            adjacency_features["adj_entities"].append(word)
+#     for word in prev_text + next_text:
+#         word = word.strip(";:-., ")
+#         # TODO: This currently does not handle entities with multiple words, e.g., "Fredriksten festning".
+#         # Can potentially be solved with ngrams or something similar.
+#         if word in entity_names:
+#             adjacency_features["adj_entities"].append(word)
         
-    return adjacency_features
+#     return adjacency_features
 
-def rank(
+def calculate_entity_distance(
+        text: str,
+        location_entity1: Dict[str, Any],
+        location_entity2: Dict[str, Any]
+) -> int:
+    # Calculates the distance between two entities in a text 
+
+    distance = 0
+    if location_entity1["start_char"] < location_entity2["end_char"]:
+        distance = len(text[location_entity1["end_char"]:location_entity2["start_char"]].split())
+    else:
+        distance = len(text[location_entity2["end_char"]:location_entity1["start_char"]].split())
+    return distance
+
+def infer_countries(
+        locations_data: List[Dict[str, Any]],
+        candidates_weight: int = 0.5,
+        text_weight: int = 0.5,
+        cutoff: int = 0.05
+) -> Dict[str, float]:
+    candidates_mentions = {}
+    text_mentions = {}
+    for location in locations_data:
+        candidate_countries = []
+        if len(location["candidates"]) == 1:
+            candidate = location["candidates"][0]
+            if candidate["feature_code"] == "PCLI":
+                if candidate["country_code"] not in text_mentions:
+                    text_mentions[candidate["country_code"]] = 1
+                else: text_mentions[candidate["country_code"]] += 1
+        for candidate in location["candidates"]:
+            if candidate["country_code"] in candidate_countries: continue
+            candidate_countries.append(candidate["country_code"])
+            if candidate["country_code"] not in candidates_mentions:
+                candidates_mentions[candidate["country_code"]] = 1
+            else: candidates_mentions[candidate["country_code"]] += 1
+    
+    # Calculate a combined weighted sum between country mentions in text and country mentions in candidates
+    weighted_mentions = {}
+    total_mentions_candidates = sum(candidates_mentions.values())
+    total_mentions_text = sum(text_mentions.values())
+    norm_weights_factor = 1 / (candidates_weight + text_weight) 
+    for key, _ in candidates_mentions.items():
+        if not text_mentions:
+            weighted_mentions[key] = candidates_mentions[key] / total_mentions_candidates
+            continue
+        if key not in text_mentions:
+            weighted_mentions[key] = candidates_weight * norm_weights_factor * (candidates_mentions[key] / total_mentions_candidates)
+        else:
+            weighted_mentions[key] = (candidates_weight * norm_weights_factor * (candidates_mentions[key] / total_mentions_candidates)) + (text_weight * norm_weights_factor * (text_mentions[key] / total_mentions_text))
+
+    # Remove values below cutoff and re-normalize
+    factor = 1 / sum([value for value in weighted_mentions.values() if value >= cutoff])
+    weighted_mentions_cutoff = {key: value*factor for key, value in weighted_mentions.items() if value >= cutoff}
+
+    return dict(sorted(weighted_mentions_cutoff.items(), key=lambda item: item[1], reverse=True))
+
+def infer_adm1(
+        locations_data: List[Dict[str, Any]]
+):
+    candidate_mentions = {}
+    for location in locations_data:
+        candidates_adm1 = []
+        for candidate in location["candidates"]:
+            if candidate["country_code"] + candidate["admin1_code"] in candidates_adm1: continue
+            candidates_adm1.append(candidate["country_code"] + candidate["admin1_code"])
+            if candidate["country_code"] not in candidate_mentions:
+                candidate_mentions[candidate["country_code"]] = {candidate["admin1_code"]: 1}
+            elif candidate["admin1_code"] not in candidate_mentions[candidate["country_code"]]:
+                candidate_mentions[candidate["country_code"]][candidate["admin1_code"]] = 1
+            else: candidate_mentions[candidate["country_code"]][candidate["admin1_code"]] += 1
+    
+    weighted_mentions = {}
+    total_candidate_mentions = 0
+    for _, value in candidate_mentions.items():
+        total_candidate_mentions += sum(value.values())
+    
+    for country_code, country_dict in candidate_mentions.items():
+        for admin1_code, value in country_dict.items():
+            if country_code not in weighted_mentions: weighted_mentions[country_code] = {}
+            weighted_mentions[country_code][admin1_code] = value / total_candidate_mentions
+
+    # TODO: Add cutoff stuff and also reinforce with mentions in text
+    return weighted_mentions
+
+
+
+def rank_baseline(
         candidates: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
     # Initial baseline approach:
@@ -173,6 +260,47 @@ def rank(
     # TODO: This returns only one select candidate atm, 
     # where a proper solution would probably return a sorted ranking amongst all candidate pairs.
     return candidates[index]
+
+def rank_advanced(
+        entity_names: List[str],
+        location: Dict[str, Any]
+) -> Dict[str, Any]:
+    # 1. Hierarchy
+    # 2. Proximity minimization?
+
+    for candidate in location["candidates"]:
+        # Can the candidate be resolved to a hierarchy?
+        # How to resolve to hierarchy?
+        # Do several passes to develop a hierarchy? E.g., do one pass to find country, then another to find first-order admin levels?
+        # Another approach would be to check every other candidate for other toponyms and see if a hierarchy can be established like that.
+
+        # Bottom-up approach:
+        # Look at all entities individually.
+        # For each one, see if any other toponym forms a hierarchy with it.
+        # Geotxt kinda does this, and assigns a score to each combination, which is then in turn used to select the best total combination.
+
+        # Top-down approach:
+        # Try and resolve top level toponyms first, such as first order administrative ones.
+        # If we are confident that a toponym is i.e., an adm1, use it to resolve other toponyms in the text that belong to its hierarchy.
+
+        # Two ways of establishing hierarchies:
+        # First is to look at each toponym, and see if any ancestor's exist in the text.
+        # Second is to see if any of the toponyms are part of a common hierarchy, i.e., a sort of spatial minimization.
+
+        # Inferring geographic scope:
+        # Can do this on adm1 and adm2.
+        # Do a pass and look for potential adm1 mentions, as well as mentions in toponym candidates.
+        # Do the same thing but for adm2.
+
+        # Attempt1:
+        # Infer relevant countries.
+        # Infer relevant geographic scope.
+        # Go through every toponym and look for ancestors nearby in text.
+        # Calculate confidence score for each candidate based on inclusion in relevant country, relevant geographic scope, and distance to ancestor mentions.
+
+        pass
+
+    pass
 
 def analyze_performance(
         file_path: str,
