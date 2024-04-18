@@ -1,13 +1,15 @@
 from typing import Callable, Any, List, Dict, Tuple
 from elasticsearch import Elasticsearch
 from elasticsearch_dsl import Search
-import numpy as np
 from pdf2image import convert_from_path
+from helpers import *
+from lists import *
+from math import isclose
+from copy import deepcopy
 import spacy
 import PyPDF2
 import pytesseract
-from helpers import *
-from lists import *
+import numpy as np
 
 
 def geoparse_pdf(
@@ -68,9 +70,7 @@ def geoparse(
             "label": entity.label_, 
             "start_char": entity.start_char, 
             "end_char": entity.end_char,
-            "adj_entities": [],
-            "candidates": [],
-            "best_candidate": None
+            "candidates": []
             })
 
     es = Elasticsearch("http://localhost:9200")
@@ -80,11 +80,13 @@ def geoparse(
     # Iterate through found place names.
     for location in locations_data:
         location["candidates"] = find_candidates(s, location["entity_name"])
-        if len(location["candidates"]) != 0:
-            location["best_candidate"] = rank_baseline(location["candidates"])
-        # adjacency_features = find_adjacency_features(location, entity_names, text)
-        # location["adj_entities"] = adjacency_features["adj_entities"]
-        
+
+    inferred_countries = infer_countries(locations_data, candidates_weight=1, text_weight=1, cutoff=0.05)
+    inferred_adm1 = infer_adm1(locations_data, s, candidates_weight=1, text_weight=1, cutoff=0.05)
+    
+    for location in locations_data:
+        rank_advanced(entity_names, location, inferred_countries, inferred_adm1)
+
     return locations_data
 
 def find_candidates(
@@ -110,8 +112,11 @@ def find_candidates(
     }
 
     if place_name in COUNTRY_NAMES:
-        q_results = s.filter("term", feature_code="PCLI").query(q)[0:5].execute() # Should in theory only ever return one value anyways?
-        return [q_results.to_dict()["hits"]["hits"][0]["_source"]]
+        q_results = s.filter("term", feature_code="PCLI").query(q)[0:100].execute() # Should in theory only ever return one value anyways.
+        # TODO: Proper error handling
+        if len(q_results) != 1:
+            print("Got an unexpected number of results from country query.")
+        return [q_results[0].to_dict()]
 
     q_results = s.query(q)[0:100].execute()
     return [result.to_dict() for result in q_results if result["name"] == place_name or result["asciiname"] == place_name or place_name in result["alternatenames"]]
@@ -173,10 +178,14 @@ def calculate_entity_distance(
 
 def infer_countries(
         locations_data: List[Dict[str, Any]],
-        candidates_weight: int = 0.5,
-        text_weight: int = 0.5,
+        candidates_weight: int = 1,
+        text_weight: int = 1,
         cutoff: int = 0.05
 ) -> Dict[str, float]:
+    # TODO: Proper error handling
+    if candidates_weight == 0 and text_weight == 0:
+        print("Cannot have both weights equaling zero")
+
     candidates_mentions = {}
     text_mentions = {}
     for location in locations_data:
@@ -208,20 +217,39 @@ def infer_countries(
         else:
             weighted_mentions[key] = (candidates_weight * norm_weights_factor * (candidates_mentions[key] / total_mentions_candidates)) + (text_weight * norm_weights_factor * (text_mentions[key] / total_mentions_text))
 
+    # TODO: Proper error handling
+    if not isclose(sum(weighted_mentions.values()), 1):
+        print("Got weighted mentions not properly normalized: ", sum(weighted_mentions.values()))
+    
     # Remove values below cutoff and re-normalize
     factor = 1 / sum([value for value in weighted_mentions.values() if value >= cutoff])
     weighted_mentions_cutoff = {key: value*factor for key, value in weighted_mentions.items() if value >= cutoff}
 
+    # TODO: Proper error handling
+    if not isclose(sum(weighted_mentions_cutoff.values()), 1):
+        print("Got weighted mentions cutoff not properly normalized: ", sum(weighted_mentions_cutoff.values()))
+
     return dict(sorted(weighted_mentions_cutoff.items(), key=lambda item: item[1], reverse=True))
 
 def infer_adm1(
-        locations_data: List[Dict[str, Any]]
+        locations_data: List[Dict[str, Any]],
+        s: Search,
+        candidates_weight: int = 1,
+        text_weight: int = 1,
+        cutoff: int = 0.05
 ):
+    # TODO: Proper error handling
+    if candidates_weight == 0 and text_weight == 0:
+        print("Cannot have both weights equaling zero")
+    # Count number of times an adm1 is in at least one of the candidates for a toponym
+    admin1_list = read_admin1("es/data/admin1CodesASCII.txt")[0].to_list()
     candidate_mentions = {}
     for location in locations_data:
         candidates_adm1 = []
         for candidate in location["candidates"]:
-            if candidate["country_code"] + candidate["admin1_code"] in candidates_adm1: continue
+            country_admin1 = candidate["country_code"] + "." + candidate["admin1_code"]
+            if country_admin1 not in admin1_list: continue # TODO: This will ignore any admin code not in the official geonames list. Admin codes such as historical ones.
+            if country_admin1 in candidates_adm1: continue
             candidates_adm1.append(candidate["country_code"] + candidate["admin1_code"])
             if candidate["country_code"] not in candidate_mentions:
                 candidate_mentions[candidate["country_code"]] = {candidate["admin1_code"]: 1}
@@ -229,18 +257,94 @@ def infer_adm1(
                 candidate_mentions[candidate["country_code"]][candidate["admin1_code"]] = 1
             else: candidate_mentions[candidate["country_code"]][candidate["admin1_code"]] += 1
     
+
+
+    # For all adm1 mentions retrieved in the previous process, find their entry in Elasticsearch.
+    # This should in theory also always include any of the potential adm1 entities found in the text,
+    # as it should then be one of the results counted from the previous process.
+    adm1_mentions = []
+    for country_code, value in candidate_mentions.items():
+        for adm1_code, _ in value.items():
+            q = {
+                "bool": {
+                    "must": [
+                        {"match": {"admin1_code": {"query": adm1_code}}},
+                        {"match": {"country_code": {"query": country_code}}},
+                        {"match": {"feature_code": {"query": "ADM1"}}},
+                        # {"query_string": {"query": "(ADM1) OR (ADM1H)", "fields": ["feature_code"]}}
+                    ]
+                }
+            }
+            q_results = s.query(q).execute()
+
+            # TODO: Need actual error handling here. Probably set up some sort of logging.
+            if len(q_results) > 1:
+                print(f"Found more than one result for adm1 query, adm1: {adm1_code}, country: {country_code}")
+                continue
+            if len(q_results) == 0:
+                print(f"Found no results for adm1 query. adm1: {adm1_code}, country: {country_code}")
+                continue
+            # Should only ever be one result in q_results here anyways, so it is fine to use indexing.
+            adm1_mentions.append(q_results[0].to_dict())
+    
+    # Make a new dictionary containing all the entries in candidate mentions, but set each count to 0.
+    text_mentions = deepcopy(candidate_mentions)
+    for country, value in text_mentions.items():
+        for adm1, _ in value.items():
+            text_mentions[country][adm1] = 0
+    for location in locations_data:
+        for adm1_mention in adm1_mentions:
+            if location["entity_name"] == adm1_mention["name"] or location["entity_name"] == adm1_mention["asciiname"] or location["entity_name"] in adm1_mention["alternatenames"]:
+                text_mentions[adm1_mention["country_code"]][adm1_mention["admin1_code"]] += 1
+    
+    # Calculate total number of mentions
     weighted_mentions = {}
     total_candidate_mentions = 0
+    total_text_mentions = 0
+    norm_weights_factor = 1 / (candidates_weight + text_weight) 
     for _, value in candidate_mentions.items():
         total_candidate_mentions += sum(value.values())
-    
-    for country_code, country_dict in candidate_mentions.items():
-        for admin1_code, value in country_dict.items():
-            if country_code not in weighted_mentions: weighted_mentions[country_code] = {}
-            weighted_mentions[country_code][admin1_code] = value / total_candidate_mentions
+    for _, value in text_mentions.items():
+        total_text_mentions += sum(value.values())
 
-    # TODO: Add cutoff stuff and also reinforce with mentions in text
-    return weighted_mentions
+    # Divide each mention by total, so as to get weighted count.
+    for country_code, country_dict in candidate_mentions.items():
+        for admin1_code, _ in country_dict.items():
+            if country_code not in weighted_mentions: weighted_mentions[country_code] = {}
+            weighted_mentions[country_code][admin1_code] = (candidates_weight * norm_weights_factor * (candidate_mentions[country_code][admin1_code] / total_candidate_mentions)) \
+                                                        + (text_weight * norm_weights_factor * (text_mentions[country_code][admin1_code] / total_text_mentions))
+    
+    # Check if weighted dictionary is properly normalized
+    total_sum = 0
+    for _, value in weighted_mentions.items():
+        total_sum += sum(value.values())
+    # TODO: Proper error handling
+    if not isclose(total_sum, 1):
+        print("Got weighted mentions not properly normalized: ", total_sum)
+
+    # Remove values below cutoff and re-normalize
+    sum_cutoff = 0
+    for _, country_dict in weighted_mentions.items():
+        for _, value in country_dict.items():
+            if value >= cutoff: sum_cutoff += value
+    factor = 1 / sum_cutoff
+    weighted_mentions_cutoff = {}
+    for country_code, country_dict in weighted_mentions.items():
+        for admin1_code, value in country_dict.items():
+            if value >= cutoff:
+                if country_code not in weighted_mentions_cutoff: weighted_mentions_cutoff[country_code] = {}
+                weighted_mentions_cutoff[country_code][admin1_code] = value * factor
+    # weighted_mentions_cutoff = {key: value*factor for key, value in weighted_mentions.items() if value >= cutoff}
+
+    # Check if weighted cutoff dictionary is properly normalized
+    total_sum_cutoff = 0
+    for _, value in weighted_mentions_cutoff.items():
+        total_sum_cutoff += sum(value.values())
+    # TODO: Proper error handling
+    if not isclose(total_sum, 1):
+        print("Got weighted mentions cutoff not properly normalized: ", total_sum_cutoff)
+
+    return weighted_mentions_cutoff
 
 
 
@@ -263,44 +367,47 @@ def rank_baseline(
 
 def rank_advanced(
         entity_names: List[str],
-        location: Dict[str, Any]
-) -> Dict[str, Any]:
+        location: Dict[str, Any],
+        inferred_countries: Dict[str, float],
+        inferred_adm1: Dict[str, Dict[str, float]]
+):
     # 1. Hierarchy
     # 2. Proximity minimization?
+    # Can the candidate be resolved to a hierarchy?
+    # How to resolve to hierarchy?
+    # Do several passes to develop a hierarchy? E.g., do one pass to find country, then another to find first-order admin levels?
+    # Another approach would be to check every other candidate for other toponyms and see if a hierarchy can be established like that.
 
+    # Bottom-up approach:
+    # Look at all entities individually.
+    # For each one, see if any other toponym forms a hierarchy with it.
+    # Geotxt kinda does this, and assigns a score to each combination, which is then in turn used to select the best total combination.
+
+    # Top-down approach:
+    # Try and resolve top level toponyms first, such as first order administrative ones.
+    # If we are confident that a toponym is i.e., an adm1, use it to resolve other toponyms in the text that belong to its hierarchy.
+
+    # Two ways of establishing hierarchies:
+    # First is to look at each toponym, and see if any ancestor's exist in the text.
+    # Second is to see if any of the toponyms are part of a common hierarchy, i.e., a sort of spatial minimization.
+
+    # Inferring geographic scope:
+    # Can do this on adm1 and adm2.
+    # Do a pass and look for potential adm1 mentions, as well as mentions in toponym candidates.
+    # Do the same thing but for adm2.
+
+    # Attempt1:
+    # Infer relevant countries.
+    # Infer relevant geographic scope.
+    # Go through every toponym and look for ancestors nearby in text.
+    # Calculate confidence score for each candidate based on inclusion in relevant country, relevant geographic scope, and distance to ancestor mentions.
     for candidate in location["candidates"]:
-        # Can the candidate be resolved to a hierarchy?
-        # How to resolve to hierarchy?
-        # Do several passes to develop a hierarchy? E.g., do one pass to find country, then another to find first-order admin levels?
-        # Another approach would be to check every other candidate for other toponyms and see if a hierarchy can be established like that.
-
-        # Bottom-up approach:
-        # Look at all entities individually.
-        # For each one, see if any other toponym forms a hierarchy with it.
-        # Geotxt kinda does this, and assigns a score to each combination, which is then in turn used to select the best total combination.
-
-        # Top-down approach:
-        # Try and resolve top level toponyms first, such as first order administrative ones.
-        # If we are confident that a toponym is i.e., an adm1, use it to resolve other toponyms in the text that belong to its hierarchy.
-
-        # Two ways of establishing hierarchies:
-        # First is to look at each toponym, and see if any ancestor's exist in the text.
-        # Second is to see if any of the toponyms are part of a common hierarchy, i.e., a sort of spatial minimization.
-
-        # Inferring geographic scope:
-        # Can do this on adm1 and adm2.
-        # Do a pass and look for potential adm1 mentions, as well as mentions in toponym candidates.
-        # Do the same thing but for adm2.
-
-        # Attempt1:
-        # Infer relevant countries.
-        # Infer relevant geographic scope.
-        # Go through every toponym and look for ancestors nearby in text.
-        # Calculate confidence score for each candidate based on inclusion in relevant country, relevant geographic scope, and distance to ancestor mentions.
-
-        pass
-
-    pass
+        candidate["score"] = 0
+        if candidate["country_code"] in inferred_countries: candidate["score"] += inferred_countries[candidate["country_code"]]
+        if candidate["country_code"] in inferred_adm1:
+            if candidate["admin1_code"] in inferred_adm1[candidate["country_code"]]: candidate["score"] += inferred_adm1[candidate["country_code"]][candidate["admin1_code"]]
+        candidate["score"] += len(candidate["alternatenames"]) * 0.01
+        candidate["score"] += int(candidate["population"]) * 0.000001
 
 def analyze_performance(
         file_path: str,
@@ -343,6 +450,8 @@ def analyze_performance(
 def print_mappings(
         locations_data: List[Dict[str, Any]]
 ):
+    # TODO: Will not work currently as the "best_candidate" field has been removed
+    return
     for location in locations_data:
         if location['best_candidate'] is None:
             print(f"{location['entity_name']} -> None")

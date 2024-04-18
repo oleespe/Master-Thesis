@@ -37,3 +37,9 @@ def deskew(image):
     M = cv2.getRotationMatrix2D(center, angle, 1.0)
     rotated = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
     return rotated
+
+def read_admin1(
+        file_path: str
+) -> pd.DataFrame:
+    admin1 = pd.read_csv(file_path, sep="\t", header=None)
+    return admin1
