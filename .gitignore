@@ -5,3 +5,4 @@ geonames_indexer_mordecai.py
 /es/data
 /sample_data
 /*env
+/results

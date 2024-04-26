@@ -43,3 +43,14 @@ def read_admin1(
 ) -> pd.DataFrame:
     admin1 = pd.read_csv(file_path, sep="\t", header=None)
     return admin1
+
+def write_csv_results(
+        file_path: str,
+        locations_data: List[Dict[str, Any]]
+):
+    with open(file_path, "w") as file:
+        file.write("name,geonameid,coordinates\n")
+        for location in locations_data:
+            if len(location["candidates"]) > 0:
+                best_candidate = location["candidates"][0]
+                file.write(f"{best_candidate['name']},{best_candidate['geonameid']},\"{best_candidate['coordinates']}\"\n")

@@ -6,19 +6,29 @@ from helpers import *
 from lists import *
 from math import isclose
 from copy import deepcopy
+from typing import Counter
 import spacy
 import PyPDF2
 import pytesseract
 import numpy as np
 
-
 def geoparse_pdf(
         file_path: str,
         pdf_parser: Callable[[str, bool], str], # pypdf2 or ocr
-        is_wikipedia: bool # Is the pdf a wikipedia article? 
+        is_wikipedia: bool, # Is the pdf a wikipedia article?
+        parameters: Dict[str, float] = {
+            "population_weight": 0.000001,
+            "alt_names_weight": 0.01,
+            "co_candidates_weight": 1,
+            "co_text_weight": 1,
+            "co_cutoff": 0.05,
+            "adm1_candidates_weight": 1,
+            "adm1_text_weight": 1,
+            "adm1_cutoff": 0.03
+        }
 ) -> Dict[str, Any]:
     text = pdf_parser(file_path, is_wikipedia)
-    return geoparse(text)
+    return geoparse(text, parameters)
 
 def pypdf2_parse(
         file_path: str,
@@ -52,7 +62,8 @@ def ocr_parse(
     return text.strip()
 
 def geoparse(
-        text: str
+        text: str,
+        parameters: Dict[str, float]
 ) -> List[Dict[str, Any]]:
     locations_data = []
     nlp = spacy.load("nb_core_news_lg")
@@ -81,13 +92,46 @@ def geoparse(
     for location in locations_data:
         location["candidates"] = find_candidates(s, location["entity_name"])
 
-    inferred_countries = infer_countries(locations_data, candidates_weight=1, text_weight=1, cutoff=0.05)
-    inferred_adm1 = infer_adm1(locations_data, s, candidates_weight=1, text_weight=1, cutoff=0.05)
+    inferred_countries = infer_countries(locations_data, parameters["co_candidates_weight"], parameters["co_text_weight"], parameters["co_cutoff"])
+    inferred_adm1 = infer_adm1(locations_data, s, parameters["adm1_candidates_weight"], parameters["adm1_text_weight"], parameters["adm1_cutoff"])
     
     for location in locations_data:
-        rank_advanced(entity_names, location, inferred_countries, inferred_adm1)
+        rank_advanced(entity_names, location, inferred_countries, inferred_adm1, parameters)
+    results = handle_duplicates(entity_names, locations_data)
+    return results, locations_data
 
-    return locations_data
+def handle_duplicates(
+        entity_names: List[str],
+        locations_data: List[Dict[str, Any]]
+):
+    # For duplicate entries the common heuristics is to treat them all as referring to the same toponym.
+    # It is however quite useful to run the ranking process on all of them, as we want to use their location in text etc.
+    # When presenting our results however, we want to return only one result per toponym.
+    # To solve this, this function looks for duplicates and selects the entry that has the highest scoring top candidate, and deletes the other ones.
+    
+    counts = Counter(entity_names)
+    locations_data_copy = deepcopy(locations_data)
+    results = []
+    for key, value in counts.items():
+        if value == 1:
+            for location in locations_data_copy:
+                if location["entity_name"] == key: results.append(location)
+            continue
+        best_score = 0
+        best_index = -1
+        for index, location in enumerate(locations_data_copy):
+            if location["entity_name"] != key:
+                continue
+            if best_index == -1:
+                best_index = index
+            if len(location["candidates"]) == 0:
+                continue
+            if best_score < location["candidates"][0]["score"]:
+                best_score = location["candidates"][0]["score"]
+                best_index = index
+        results.append(locations_data_copy[best_index])
+    return results
+
 
 def find_candidates(
         s: Search,
@@ -112,13 +156,14 @@ def find_candidates(
     }
 
     if place_name in COUNTRY_NAMES:
-        q_results = s.filter("term", feature_code="PCLI").query(q)[0:100].execute() # Should in theory only ever return one value anyways.
+        q_results = s.filter("term", feature_code="PCLI").query(q).execute() # Should in theory only ever return one value anyways.
         # TODO: Proper error handling
         if len(q_results) != 1:
             print("Got an unexpected number of results from country query.")
         return [q_results[0].to_dict()]
 
-    q_results = s.query(q)[0:100].execute()
+    # q_results = s.query(q)[0:100].execute()
+    q_results = s.query(q).execute()
     return [result.to_dict() for result in q_results if result["name"] == place_name or result["asciiname"] == place_name or place_name in result["alternatenames"]]
 
     # TODO: If place name is not in "name", "asciiname" or "alternatenames", we currently return nothing.
@@ -369,7 +414,8 @@ def rank_advanced(
         entity_names: List[str],
         location: Dict[str, Any],
         inferred_countries: Dict[str, float],
-        inferred_adm1: Dict[str, Dict[str, float]]
+        inferred_adm1: Dict[str, Dict[str, float]],
+        parameters: Dict[str, float]
 ):
     # 1. Hierarchy
     # 2. Proximity minimization?
@@ -406,8 +452,12 @@ def rank_advanced(
         if candidate["country_code"] in inferred_countries: candidate["score"] += inferred_countries[candidate["country_code"]]
         if candidate["country_code"] in inferred_adm1:
             if candidate["admin1_code"] in inferred_adm1[candidate["country_code"]]: candidate["score"] += inferred_adm1[candidate["country_code"]][candidate["admin1_code"]]
-        candidate["score"] += len(candidate["alternatenames"]) * 0.01
-        candidate["score"] += int(candidate["population"]) * 0.000001
+        candidate["score"] += len(candidate["alternatenames"]) * parameters["alt_names_weight"]
+        candidate["score"] += int(candidate["population"]) * parameters["population_weight"]
+    
+    def sort(candidate):
+        return candidate["score"]
+    location["candidates"] = sorted(location["candidates"], key=sort, reverse=True)
 
 def analyze_performance(
         file_path: str,
