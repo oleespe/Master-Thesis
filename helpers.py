@@ -1,4 +1,5 @@
 from typing import Callable, Any, List, Dict
+from math import exp
 import cv2
 import numpy as np
 import pandas as pd
@@ -44,6 +45,12 @@ def read_admin1(
     admin1 = pd.read_csv(file_path, sep="\t", header=None)
     return admin1
 
+def read_admin2(
+        file_path: str
+) -> pd.DataFrame:
+    admin2 = pd.read_csv(file_path, sep="\t", header=None)
+    return admin2
+
 def write_csv_results(
         file_path: str,
         locations_data: List[Dict[str, Any]]
@@ -54,3 +61,31 @@ def write_csv_results(
             if len(location["candidates"]) > 0:
                 best_candidate = location["candidates"][0]
                 file.write(f"{best_candidate['name']},{best_candidate['geonameid']},\"{best_candidate['coordinates']}\"\n")
+
+def logistic_function(
+        x: float,
+        x0: float = 0,
+        l: float = 1,
+        k: float = 1
+) -> float:
+    return l / (1 + exp(-k*(x-x0)))
+
+def print_results(
+        locations_data: List[Dict[str, Any]],
+        fields: List[str] = ["entity_name"],
+        candidate_fields: List[str] = ["name", "geonameid", "country_code", "coordinates", "score"],
+        n_candidates: int = 2
+):
+    for location in locations_data:
+        for field in fields:
+            print(f"{field}: {location[field]}")
+        i = 0
+        print("candidates: {")
+        for candidate in location["candidates"]:
+            print("   {")
+            for candidate_field in candidate_fields:
+                print(f"\t{candidate_field}: {candidate[candidate_field]}")
+            print("   }")
+            i += 1
+            if i == n_candidates: break
+        print("}\n")

@@ -4,7 +4,7 @@ from elasticsearch_dsl import Search
 from pdf2image import convert_from_path
 from helpers import *
 from lists import *
-from math import isclose
+from math import isclose, log2
 from copy import deepcopy
 from typing import Counter
 import spacy
@@ -16,19 +16,18 @@ def geoparse_pdf(
         file_path: str,
         pdf_parser: Callable[[str, bool], str], # pypdf2 or ocr
         is_wikipedia: bool, # Is the pdf a wikipedia article?
-        parameters: Dict[str, float] = {
-            "population_weight": 0.000001,
-            "alt_names_weight": 0.01,
-            "co_candidates_weight": 1,
-            "co_text_weight": 1,
-            "co_cutoff": 0.05,
-            "adm1_candidates_weight": 1,
-            "adm1_text_weight": 1,
-            "adm1_cutoff": 0.03
-        }
+        pop_weight: float = 1,
+        alt_names_weight: float = 1,
+        co_candidates_weight: float = 1,
+        co_text_weight: float = 1,
+        adm1_candidates_weight: float = 1,
+        adm1_text_weight: float = 1,
+        co_cutoff: float = 0.05,
+        adm1_cutoff: float = 0.05
 ) -> Dict[str, Any]:
     text = pdf_parser(file_path, is_wikipedia)
-    return geoparse(text, parameters)
+    return geoparse(text, pop_weight, alt_names_weight, co_candidates_weight, 
+                    co_text_weight, adm1_candidates_weight, adm1_text_weight, co_cutoff, adm1_cutoff)
 
 def pypdf2_parse(
         file_path: str,
@@ -63,7 +62,14 @@ def ocr_parse(
 
 def geoparse(
         text: str,
-        parameters: Dict[str, float]
+        pop_weight: float = 1,
+        alt_names_weight: float = 1,
+        co_candidates_weight: float = 1,
+        co_text_weight: float = 1,
+        adm1_candidates_weight: float = 1,
+        adm1_text_weight: float = 1,
+        co_cutoff: float = 0.05,
+        adm1_cutoff: float = 0.05
 ) -> List[Dict[str, Any]]:
     locations_data = []
     nlp = spacy.load("nb_core_news_lg")
@@ -92,19 +98,19 @@ def geoparse(
     for location in locations_data:
         location["candidates"] = find_candidates(s, location["entity_name"])
 
-    inferred_countries = infer_countries(locations_data, parameters["co_candidates_weight"], parameters["co_text_weight"], parameters["co_cutoff"])
-    inferred_adm1 = infer_adm1(locations_data, s, parameters["adm1_candidates_weight"], parameters["adm1_text_weight"], parameters["adm1_cutoff"])
+    inferred_countries = infer_countries(locations_data, co_candidates_weight, co_text_weight, co_cutoff)
+    inferred_adm1 = infer_adm1(locations_data, s, adm1_candidates_weight, adm1_text_weight, adm1_cutoff)
     
     for location in locations_data:
-        rank_advanced(entity_names, location, inferred_countries, inferred_adm1, parameters)
+        rank_advanced(location, locations_data, s, text, inferred_countries, inferred_adm1, pop_weight, alt_names_weight)
     results = handle_duplicates(entity_names, locations_data)
     return results, locations_data
 
 def handle_duplicates(
         entity_names: List[str],
         locations_data: List[Dict[str, Any]]
-):
-    # For duplicate entries the common heuristics is to treat them all as referring to the same toponym.
+) -> List[Dict[str, Any]]:
+    # For duplicate entries the common heuristic is to treat them all as referring to the same toponym.
     # It is however quite useful to run the ranking process on all of them, as we want to use their location in text etc.
     # When presenting our results however, we want to return only one result per toponym.
     # To solve this, this function looks for duplicates and selects the entry that has the highest scoring top candidate, and deletes the other ones.
@@ -162,8 +168,7 @@ def find_candidates(
             print("Got an unexpected number of results from country query.")
         return [q_results[0].to_dict()]
 
-    # q_results = s.query(q)[0:100].execute()
-    q_results = s.query(q).execute()
+    q_results = s.query(q)[0:1000].execute()
     return [result.to_dict() for result in q_results if result["name"] == place_name or result["asciiname"] == place_name or place_name in result["alternatenames"]]
 
     # TODO: If place name is not in "name", "asciiname" or "alternatenames", we currently return nothing.
@@ -302,8 +307,6 @@ def infer_adm1(
                 candidate_mentions[candidate["country_code"]][candidate["admin1_code"]] = 1
             else: candidate_mentions[candidate["country_code"]][candidate["admin1_code"]] += 1
     
-
-
     # For all adm1 mentions retrieved in the previous process, find their entry in Elasticsearch.
     # This should in theory also always include any of the potential adm1 entities found in the text,
     # as it should then be one of the results counted from the previous process.
@@ -313,8 +316,8 @@ def infer_adm1(
             q = {
                 "bool": {
                     "must": [
-                        {"match": {"admin1_code": {"query": adm1_code}}},
                         {"match": {"country_code": {"query": country_code}}},
+                        {"match": {"admin1_code": {"query": adm1_code}}},
                         {"match": {"feature_code": {"query": "ADM1"}}},
                         # {"query_string": {"query": "(ADM1) OR (ADM1H)", "fields": ["feature_code"]}}
                     ]
@@ -324,7 +327,7 @@ def infer_adm1(
 
             # TODO: Need actual error handling here. Probably set up some sort of logging.
             if len(q_results) > 1:
-                print(f"Found more than one result for adm1 query, adm1: {adm1_code}, country: {country_code}")
+                print(f"Found more than one result for adm1 query. adm1: {adm1_code}, country: {country_code}")
                 continue
             if len(q_results) == 0:
                 print(f"Found no results for adm1 query. adm1: {adm1_code}, country: {country_code}")
@@ -391,7 +394,82 @@ def infer_adm1(
 
     return weighted_mentions_cutoff
 
+def get_ancestors(
+        candidate: Dict[str, Any],
+        s: Search
+) -> Dict[str, Dict[str, Any]]:
+    ancestors = {"country": None, "admin1": None, "admin2": None}
 
+    feature_code = candidate['feature_code']
+    country_code = candidate['country_code']
+    admin1_code = candidate['admin1_code']
+    admin2_code = candidate['admin2_code']
+    admin1_list = read_admin1("es/data/admin1CodesASCII.txt")[0].to_list()
+    admin2_list = read_admin2("es/data/admin2Codes.txt")[0].to_list()
+
+    # Search for country geonames entry.
+    if feature_code != "PCLI":
+        q = {
+            "bool": {
+                "must": [
+                    {"match": {"country_code": {"query": country_code}}},
+                    {"match": {"feature_code": {"query": "PCLI"}}}
+                ]
+            }
+        }
+        q_results = s.query(q).execute()
+
+        # TODO: Need actual error handling here. Probably set up some sort of logging.
+        if len(q_results) > 1:
+            print(f"Found more than one result for country query. country: {country_code}")
+        elif len(q_results) == 0:
+            print(f"Found no results for country query. country: {country_code}")
+        else:
+            ancestors["country"] = q_results[0].to_dict()
+
+    # Search for admin1 geonames entry.
+    if f"{country_code}.{admin1_code}" in admin1_list and feature_code != "ADM1":
+        q = {
+            "bool": {
+                "must": [
+                    {"match": {"country_code": {"query": country_code}}},
+                    {"match": {"admin1_code": {"query": admin1_code}}},
+                    {"match": {"feature_code": {"query": "ADM1"}}}
+                ]
+            }
+        }
+        q_results = s.query(q).execute()
+
+        # TODO: Need actual error handling here. Probably set up some sort of logging.
+        if len(q_results) > 1:
+            print(f"Found more than one result for adm1 query. adm1: {admin1_code}, country: {country_code}")
+        elif len(q_results) == 0:
+            print(f"Found no results for adm1 query. adm1: {admin1_code}, country: {country_code}")
+        else:
+            ancestors["admin1"] = q_results[0].to_dict()
+
+    # Search for admin2 geonames entry.
+    if f"{country_code}.{admin1_code}.{admin2_code}" in admin2_list and feature_code != "ADM2":
+        q = {
+            "bool": {
+                "must": [
+                    {"match": {"country_code": {"query": country_code}}},
+                    {"match": {"admin1_code": {"query": admin1_code}}},
+                    {"match": {"admin2_code": {"query": admin2_code}}},
+                    {"match": {"feature_code": {"query": "ADM2"}}}
+                ]
+            }
+        }
+        q_results = s.query(q).execute()
+
+        # TODO: Need actual error handling here. Probably set up some sort of logging.
+        if len(q_results) > 1:
+            print(f"Found more than one result for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
+        elif len(q_results) == 0:
+            print(f"Found no results for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
+        else:
+            ancestors["admin2"] = q_results[0].to_dict()
+    return ancestors
 
 def rank_baseline(
         candidates: List[Dict[str, Any]]
@@ -411,11 +489,14 @@ def rank_baseline(
     return candidates[index]
 
 def rank_advanced(
-        entity_names: List[str],
         location: Dict[str, Any],
+        locations_data: List[Dict[str, Any]],
+        s: Search,
+        text: str,
         inferred_countries: Dict[str, float],
         inferred_adm1: Dict[str, Dict[str, float]],
-        parameters: Dict[str, float]
+        pop_weight: float,
+        alt_names_weight: float
 ):
     # 1. Hierarchy
     # 2. Proximity minimization?
@@ -447,17 +528,93 @@ def rank_advanced(
     # Infer relevant geographic scope.
     # Go through every toponym and look for ancestors nearby in text.
     # Calculate confidence score for each candidate based on inclusion in relevant country, relevant geographic scope, and distance to ancestor mentions.
+
     for candidate in location["candidates"]:
-        candidate["score"] = 0
-        if candidate["country_code"] in inferred_countries: candidate["score"] += inferred_countries[candidate["country_code"]]
-        if candidate["country_code"] in inferred_adm1:
-            if candidate["admin1_code"] in inferred_adm1[candidate["country_code"]]: candidate["score"] += inferred_adm1[candidate["country_code"]][candidate["admin1_code"]]
-        candidate["score"] += len(candidate["alternatenames"]) * parameters["alt_names_weight"]
-        candidate["score"] += int(candidate["population"]) * parameters["population_weight"]
+        candidate["pop_score"] = pop_score(int(candidate["population"]), pop_weight)
+        candidate["alt_names_score"] = alt_names_score(len(candidate["alternatenames"]), alt_names_weight)
+        candidate["country_score"] = country_score(inferred_countries, candidate["country_code"])
+        candidate["admin1_score"] = admin1_score(inferred_adm1, candidate["country_code"], candidate["admin1_code"])
+        candidate["hierarchy_score"] = hierarchy_score(candidate, s, location, locations_data, text)
+        candidate["score"] = candidate["pop_score"] + candidate["alt_names_score"] + candidate["country_score"] + candidate["admin1_score"] + candidate["hierarchy_score"]
     
     def sort(candidate):
         return candidate["score"]
     location["candidates"] = sorted(location["candidates"], key=sort, reverse=True)
+
+def find_hierarchy_distances(
+        ancestors: Dict[str, Dict[str, Any]],
+        location: Dict[str, Any],
+        locations_data: List[Dict[str, Any]],
+        text: str
+):
+    hierarchy_distances = {}
+    for key, value in ancestors.items():
+        if value is None:
+            continue
+        for entry in locations_data:
+            if entry["entity_name"] == value["name"] or entry["entity_name"] == value["asciiname"] or entry["entity_name"] in value["alternatenames"]:
+                distance = calculate_entity_distance(text, location, entry)
+                if key not in hierarchy_distances: hierarchy_distances[key] = distance
+                elif distance < hierarchy_distances[key]: hierarchy_distances[key] = distance
+    
+    hierarchy_distances_copy = deepcopy(hierarchy_distances)
+    for key, value in hierarchy_distances.items():
+        # TODO: If the distance is ever 0, it means that a candidate shares the same name with its hierarchical ancestors.
+        # For instance, the entity Trøndelag will return the candidate Trøndelag with feature_code RGN, as being part of the admin1 division Trøndelag.
+        # Calculating the distance for these types of entries will always return 0.
+        # For now we will simply remove these.
+        if value == 0: del hierarchy_distances_copy[key]
+    return hierarchy_distances_copy
+
+def hierarchy_score(
+        candidate: Dict[str, Any],
+        s: Search,
+        location: Dict[str, Any],
+        locations_data: List[Dict[str, Any]],
+        text: str
+) -> float:
+    ancestors = get_ancestors(candidate, s)
+    hierarchy_distances = find_hierarchy_distances(ancestors, location, locations_data, text)
+    # TODO: These are random weights for now
+    score = 0
+    for key, value in hierarchy_distances.items():
+        temp_score = 0
+        if key == "admin2": temp_score = (1 / value) * 1
+        if key == "admin1": temp_score = (1 / value) * 0.2
+        if key == "country": temp_score = (1 / value) * 0.1
+        if temp_score > score: score = temp_score
+    return score
+
+def pop_score(
+        candidate_pop: int,
+        weight: int
+) -> float:
+    if candidate_pop == 0: return 0
+    scaled_pop = candidate_pop / 10000
+    return logistic_function(log2(scaled_pop), 3) * weight
+
+def alt_names_score(
+        num_alt_names: int,
+        weight: int
+) -> float:
+    if num_alt_names == 0: return 0
+    return logistic_function(log2(num_alt_names), 3) * weight
+
+def country_score(
+        inferred_countries: Dict[str, float],
+        country_code: str
+) -> float:
+    if country_code not in inferred_countries: return 0
+    return inferred_countries[country_code]
+
+def admin1_score(
+        inferred_adm1: Dict[str, Dict[str, float]],
+        country_code: str,
+        admin1_code: str
+) -> float:
+    if country_code not in inferred_adm1: return 0
+    if admin1_code not in inferred_adm1[country_code]: return 0
+    return inferred_adm1[country_code][admin1_code]
 
 def analyze_performance(
         file_path: str,
