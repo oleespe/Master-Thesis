@@ -12,6 +12,10 @@ import PyPDF2
 import pytesseract
 import numpy as np
 
+# These are read here to increase performance.
+ADMIN1_LIST = read_admin1("es/data/admin1CodesASCII.txt")[0].to_list()
+ADMIN2_LIST = read_admin2("es/data/admin2Codes.txt")[0].to_list()
+
 def geoparse_pdf(
         file_path: str,
         pdf_parser: Callable[[str, bool], str], # pypdf2 or ocr
@@ -91,18 +95,18 @@ def geoparse(
             })
 
     es = Elasticsearch("http://localhost:9200")
-    s = Search(using=es, index="geonames_custom")
     entity_names = [location["entity_name"] for location in locations_data]
 
     # Iterate through found place names.
     for location in locations_data:
-        location["candidates"] = find_candidates(s, location["entity_name"])
+        location["candidates"] = find_candidates(es, location["entity_name"])
 
     inferred_countries = infer_countries(locations_data, co_candidates_weight, co_text_weight, co_cutoff)
-    inferred_adm1 = infer_adm1(locations_data, s, adm1_candidates_weight, adm1_text_weight, adm1_cutoff)
+    inferred_adm1 = infer_adm1(locations_data, es, adm1_candidates_weight, adm1_text_weight, adm1_cutoff)
     
+    searched_entries = {}
     for location in locations_data:
-        rank_advanced(location, locations_data, s, text, inferred_countries, inferred_adm1, pop_weight, alt_names_weight)
+        rank_advanced(location, locations_data, es, text, searched_entries, inferred_countries, inferred_adm1, pop_weight, alt_names_weight)
     results = handle_duplicates(entity_names, locations_data)
     return results, locations_data
 
@@ -140,7 +144,7 @@ def handle_duplicates(
 
 
 def find_candidates(
-        s: Search,
+        es: Elasticsearch,
         place_name: str
 ) -> List[Dict[str, Any]]:
     # Difficulties:
@@ -153,6 +157,7 @@ def find_candidates(
     # If place name is a country, filter for feature_code="PCLI"
     # Select amongst entries whose name matches perfectly in "name", "asciiname" or "alternatenames"
 
+    s = Search(using=es, index="geonames_custom")
     q = {
         "multi_match": {
             "query": place_name,
@@ -169,8 +174,25 @@ def find_candidates(
         return [q_results[0].to_dict()]
 
     q_results = s.query(q)[0:1000].execute()
-    return [result.to_dict() for result in q_results if result["name"] == place_name or result["asciiname"] == place_name or place_name in result["alternatenames"]]
 
+    # Only use results that match the entity name perfectly.
+    results = [result.to_dict() for result in q_results if result["name"] == place_name or result["asciiname"] == place_name or place_name in result["alternatenames"]]
+
+    # If there are no candidates in geonames, search stedsnavn.
+    # TODO: Best approach for handling stedsnavn results would be to convert them into the same representation as geonames, 
+    # otherwise two different sets of logic will have to be produced for the scoring algorithms.
+    if len(results) == 0:
+        s = Search(using=es, index="stedsnavn")
+        q = {
+            "multi_match": {
+                "query": place_name,
+                "fields": ["name", "alternatenames"],
+                "type": "phrase"
+            }
+        }
+        q_results = s.query(q)[0:1000].execute()
+        results = [result.to_dict() for result in q_results if result["name"] == place_name or result["asciiname"] == place_name or place_name in result["alternatenames"]]
+    return results
     # TODO: If place name is not in "name", "asciiname" or "alternatenames", we currently return nothing.
 
 def find_features():
@@ -217,7 +239,7 @@ def calculate_entity_distance(
         location_entity1: Dict[str, Any],
         location_entity2: Dict[str, Any]
 ) -> int:
-    # Calculates the distance between two entities in a text 
+    # Calculates the distance between two entities in a text
 
     distance = 0
     if location_entity1["start_char"] < location_entity2["end_char"]:
@@ -283,7 +305,7 @@ def infer_countries(
 
 def infer_adm1(
         locations_data: List[Dict[str, Any]],
-        s: Search,
+        es: Elasticsearch,
         candidates_weight: int = 1,
         text_weight: int = 1,
         cutoff: int = 0.05
@@ -292,13 +314,12 @@ def infer_adm1(
     if candidates_weight == 0 and text_weight == 0:
         print("Cannot have both weights equaling zero")
     # Count number of times an adm1 is in at least one of the candidates for a toponym
-    admin1_list = read_admin1("es/data/admin1CodesASCII.txt")[0].to_list()
     candidate_mentions = {}
     for location in locations_data:
         candidates_adm1 = []
         for candidate in location["candidates"]:
             country_admin1 = candidate["country_code"] + "." + candidate["admin1_code"]
-            if country_admin1 not in admin1_list: continue # TODO: This will ignore any admin code not in the official geonames list. Admin codes such as historical ones.
+            if country_admin1 not in ADMIN1_LIST: continue # TODO: This will ignore any admin code not in the official geonames list. Admin codes such as historical ones.
             if country_admin1 in candidates_adm1: continue
             candidates_adm1.append(candidate["country_code"] + candidate["admin1_code"])
             if candidate["country_code"] not in candidate_mentions:
@@ -313,6 +334,7 @@ def infer_adm1(
     adm1_mentions = []
     for country_code, value in candidate_mentions.items():
         for adm1_code, _ in value.items():
+            s = Search(using=es, index="geonames_custom")
             q = {
                 "bool": {
                     "must": [
@@ -396,7 +418,8 @@ def infer_adm1(
 
 def get_ancestors(
         candidate: Dict[str, Any],
-        s: Search
+        es: Elasticsearch,
+        searched_entries: Dict[str, Dict[str, Any]]
 ) -> Dict[str, Dict[str, Any]]:
     ancestors = {"country": None, "admin1": None, "admin2": None}
 
@@ -404,76 +427,93 @@ def get_ancestors(
     country_code = candidate['country_code']
     admin1_code = candidate['admin1_code']
     admin2_code = candidate['admin2_code']
-    admin1_list = read_admin1("es/data/admin1CodesASCII.txt")[0].to_list()
-    admin2_list = read_admin2("es/data/admin2Codes.txt")[0].to_list()
 
+    # TODO: See if doing this actually increases performance.
+    # Nullify dict for now, to deactivate the feature without having to remove the relevant code.
+    searched_entries = {}
+    s = Search(using=es, index="geonames_custom")
     # Search for country geonames entry.
     if feature_code != "PCLI":
-        q = {
-            "bool": {
-                "must": [
-                    {"match": {"country_code": {"query": country_code}}},
-                    {"match": {"feature_code": {"query": "PCLI"}}}
-                ]
+        if country_code not in searched_entries:
+            q = {
+                "bool": {
+                    "must": [
+                        {"match": {"country_code": {"query": country_code}}},
+                        {"match": {"feature_code": {"query": "PCLI"}}}
+                    ]
+                }
             }
-        }
-        q_results = s.query(q).execute()
+            q_results = s.query(q).execute()
 
-        # TODO: Need actual error handling here. Probably set up some sort of logging.
-        if len(q_results) > 1:
-            print(f"Found more than one result for country query. country: {country_code}")
-        elif len(q_results) == 0:
-            print(f"Found no results for country query. country: {country_code}")
+            # TODO: Need actual error handling here. Probably set up some sort of logging.
+            if len(q_results) > 1:
+                print(f"Found more than one result for country query. country: {country_code}")
+            elif len(q_results) == 0:
+                print(f"Found no results for country query. country: {country_code}")
+            else:
+                ancestors["country"] = q_results[0].to_dict()
+                searched_entries[country_code] = q_results[0].to_dict()
         else:
-            ancestors["country"] = q_results[0].to_dict()
+            ancestors["country"] = searched_entries[country_code]
 
     # Search for admin1 geonames entry.
-    if f"{country_code}.{admin1_code}" in admin1_list and feature_code != "ADM1":
-        q = {
-            "bool": {
-                "must": [
-                    {"match": {"country_code": {"query": country_code}}},
-                    {"match": {"admin1_code": {"query": admin1_code}}},
-                    {"match": {"feature_code": {"query": "ADM1"}}}
-                ]
+    if f"{country_code}.{admin1_code}" in ADMIN1_LIST and feature_code != "ADM1":
+        if f"{country_code}.{admin1_code}" not in searched_entries:
+            q = {
+                "bool": {
+                    "must": [
+                        {"match": {"country_code": {"query": country_code}}},
+                        {"match": {"admin1_code": {"query": admin1_code}}},
+                        {"match": {"feature_code": {"query": "ADM1"}}}
+                    ]
+                }
             }
-        }
-        q_results = s.query(q).execute()
+            q_results = s.query(q).execute()
 
-        # TODO: Need actual error handling here. Probably set up some sort of logging.
-        if len(q_results) > 1:
-            print(f"Found more than one result for adm1 query. adm1: {admin1_code}, country: {country_code}")
-        elif len(q_results) == 0:
-            print(f"Found no results for adm1 query. adm1: {admin1_code}, country: {country_code}")
+            # TODO: Need actual error handling here. Probably set up some sort of logging.
+            if len(q_results) > 1:
+                print(f"Found more than one result for adm1 query. adm1: {admin1_code}, country: {country_code}")
+            elif len(q_results) == 0:
+                print(f"Found no results for adm1 query. adm1: {admin1_code}, country: {country_code}")
+            else:
+                ancestors["admin1"] = q_results[0].to_dict()
+                searched_entries[f"{country_code}.{admin1_code}"] = q_results[0].to_dict()
         else:
-            ancestors["admin1"] = q_results[0].to_dict()
+            ancestors["admin1"] = searched_entries[f"{country_code}.{admin1_code}"]
 
     # Search for admin2 geonames entry.
-    if f"{country_code}.{admin1_code}.{admin2_code}" in admin2_list and feature_code != "ADM2":
-        q = {
-            "bool": {
-                "must": [
-                    {"match": {"country_code": {"query": country_code}}},
-                    {"match": {"admin1_code": {"query": admin1_code}}},
-                    {"match": {"admin2_code": {"query": admin2_code}}},
-                    {"match": {"feature_code": {"query": "ADM2"}}}
-                ]
+    if f"{country_code}.{admin1_code}.{admin2_code}" in ADMIN2_LIST and feature_code != "ADM2":
+        if f"{country_code}.{admin1_code}.{admin2_code}" not in searched_entries:
+            q = {
+                "bool": {
+                    "must": [
+                        {"match": {"country_code": {"query": country_code}}},
+                        {"match": {"admin1_code": {"query": admin1_code}}},
+                        {"match": {"admin2_code": {"query": admin2_code}}},
+                        {"match": {"feature_code": {"query": "ADM2"}}}
+                    ]
+                }
             }
-        }
-        q_results = s.query(q).execute()
+            q_results = s.query(q).execute()
 
-        # TODO: Need actual error handling here. Probably set up some sort of logging.
-        if len(q_results) > 1:
-            print(f"Found more than one result for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
-        elif len(q_results) == 0:
-            print(f"Found no results for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
+            # TODO: Need actual error handling here. Probably set up some sort of logging.
+            if len(q_results) > 1:
+                print(f"Found more than one result for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
+            elif len(q_results) == 0:
+                print(f"Found no results for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
+            else:
+                ancestors["admin2"] = q_results[0].to_dict()
+                searched_entries[f"{country_code}.{admin1_code}.{admin2_code}"] = q_results[0].to_dict()
         else:
-            ancestors["admin2"] = q_results[0].to_dict()
+            ancestors["admin2"] = searched_entries[f"{country_code}.{admin1_code}.{admin2_code}"]
     return ancestors
 
 def rank_baseline(
         candidates: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
+    # TODO: Not functional atm. Needs to sort candidates by length of alternate names, 
+    # instead of just returning one.
+    return
     # Initial baseline approach:
     # Select candidate with the most alternate names
 
@@ -491,13 +531,15 @@ def rank_baseline(
 def rank_advanced(
         location: Dict[str, Any],
         locations_data: List[Dict[str, Any]],
-        s: Search,
+        es: Elasticsearch,
         text: str,
+        searched_entries: Dict[str, Dict[str, Any]],
         inferred_countries: Dict[str, float],
         inferred_adm1: Dict[str, Dict[str, float]],
         pop_weight: float,
-        alt_names_weight: float
+        alt_names_weight: float,
 ):
+    if len(location["candidates"]) == 0: return
     # 1. Hierarchy
     # 2. Proximity minimization?
     # Can the candidate be resolved to a hierarchy?
@@ -534,7 +576,7 @@ def rank_advanced(
         candidate["alt_names_score"] = alt_names_score(len(candidate["alternatenames"]), alt_names_weight)
         candidate["country_score"] = country_score(inferred_countries, candidate["country_code"])
         candidate["admin1_score"] = admin1_score(inferred_adm1, candidate["country_code"], candidate["admin1_code"])
-        candidate["hierarchy_score"] = hierarchy_score(candidate, s, location, locations_data, text)
+        candidate["hierarchy_score"] = hierarchy_score(candidate, es, location, locations_data, text, searched_entries)
         candidate["score"] = candidate["pop_score"] + candidate["alt_names_score"] + candidate["country_score"] + candidate["admin1_score"] + candidate["hierarchy_score"]
     
     def sort(candidate):
@@ -568,12 +610,13 @@ def find_hierarchy_distances(
 
 def hierarchy_score(
         candidate: Dict[str, Any],
-        s: Search,
+        es: Elasticsearch,
         location: Dict[str, Any],
         locations_data: List[Dict[str, Any]],
-        text: str
+        text: str,
+        searched_entries: Dict[str, Dict[str, Any]]
 ) -> float:
-    ancestors = get_ancestors(candidate, s)
+    ancestors = get_ancestors(candidate, es, searched_entries)
     hierarchy_distances = find_hierarchy_distances(ancestors, location, locations_data, text)
     # TODO: These are random weights for now
     score = 0

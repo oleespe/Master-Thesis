@@ -56,11 +56,12 @@ def write_csv_results(
         locations_data: List[Dict[str, Any]]
 ):
     with open(file_path, "w") as file:
-        file.write("name,geonameid,coordinates\n")
+        file.write("name,id,coordinates,database\n")
         for location in locations_data:
             if len(location["candidates"]) > 0:
                 best_candidate = location["candidates"][0]
-                file.write(f"{best_candidate['name']},{best_candidate['geonameid']},\"{best_candidate['coordinates']}\"\n")
+                if "geonameid" in best_candidate: file.write(f"{best_candidate['name']},{best_candidate['geonameid']},\"{best_candidate['coordinates']}\",geonames\n")
+                else: file.write(f"{best_candidate['name']},{best_candidate['stedsnavnid']},\"{best_candidate['coordinates']}\",stedsnavn\n")
 
 def logistic_function(
         x: float,
