@@ -176,22 +176,42 @@ def find_candidates(
     q_results = s.query(q)[0:1000].execute()
 
     # Only use results that match the entity name perfectly.
-    results = [result.to_dict() for result in q_results if result["name"] == place_name or result["asciiname"] == place_name or place_name in result["alternatenames"]]
+    results = [convert_geonames(result.to_dict()) for result in q_results if result["name"] == place_name or result["asciiname"] == place_name or place_name in result["alternatenames"]]
+    if len(results) != 0:
+        return results
 
     # If there are no candidates in geonames, search stedsnavn.
     # TODO: Best approach for handling stedsnavn results would be to convert them into the same representation as geonames, 
     # otherwise two different sets of logic will have to be produced for the scoring algorithms.
-    if len(results) == 0:
-        s = Search(using=es, index="stedsnavn")
-        q = {
-            "multi_match": {
-                "query": place_name,
-                "fields": ["name", "alternatenames"],
-                "type": "phrase"
-            }
+    
+    # Two approaches to doing this:
+    # Do the representation before indexing - Has the advantage of letting us then use the same queries on both datasets.
+    # Do the representation when accessing the data - Will have to convert both datasets on use. Has the advantage of letting the individual datasets be in their rawest form.
+
+    # A common format should look something like this:
+    # {type: stedsnavn/geonames, id: "", name: "", asciiname: "", alternatenames: [""], feature_class: "", country_code: "", feature_code: "", admin1_code: "", admin2_code: "", population: "", coordinates: ""}
+    # This is basically the geonames format. Feature class is maybe not necessary.
+    # In short, we need names info, id, type info, hierarchy info, population, and coordinates.
+
+    # Do we draw candidates from both datasets or only from stedsnavn if geonames returns nothing.
+    # The major problem with drawing candidates from both is that we will get duplicate entries a lot of the time, i.e., we will have candidates from both geonames and stedsnavn that refer to the same geographical location.
+    # Do not think there is a good way of figuring out if a geonames and stedsnavn entry refer to the same place.
+    # Could potentially still run the geoparsing process with duplicate entries like this, but will maybe mess up stuff.
+    # Should therefore probably only get candidates from stedsnavn when necessary.
+
+    # TODO: Solution for this.
+    # Only draw candidates when none are found from geonames.
+    # Convert to geonames like format after indexing.
+    s = Search(using=es, index="stedsnavn")
+    q = {
+        "multi_match": {
+            "query": place_name,
+            "fields": ["name", "alternatenames"],
+            "type": "phrase"
         }
-        q_results = s.query(q)[0:1000].execute()
-        results = [result.to_dict() for result in q_results if result["name"] == place_name or result["asciiname"] == place_name or place_name in result["alternatenames"]]
+    }
+    q_results = s.query(q)[0:1000].execute()
+    results = [result.to_dict() for result in q_results if result["name"] == place_name or place_name in result["alternatenames"]]
     return results
     # TODO: If place name is not in "name", "asciiname" or "alternatenames", we currently return nothing.
 

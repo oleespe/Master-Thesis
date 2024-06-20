@@ -59,6 +59,7 @@ def parse_stedsnavn_data(reader):
             entry_name = ""
             alternate_names = []
             for name in names:
+                if name["name"] in alternate_names: continue
                 if not entry_name and (name["priority"] or len(names) == 1): entry_name = name["name"]
                 else: alternate_names.append(name["name"])
             
@@ -66,6 +67,27 @@ def parse_stedsnavn_data(reader):
             if not entry_name:
                 entry_name = alternate_names[0]
                 alternate_names = alternate_names[1:]
+
+            # Administrative divisions
+            admin_codes = [] # [(admin1_code, admin2_code), ...]
+            admin_names = [] # [(admin1_name, admin2_name), ...] Index in admin_codes matches admin_names
+            admins_list = element.findall(".//" + NS["app"] + "Kommune")
+            for admin in admins_list:
+                admin1_code = admin.findall(".//" + NS["app"] + "fylkesnummer")
+                if len(admin1_code) > 1:
+                    raise Exception(f"Found more than one admin1 code for Kommune in entry: {id}")
+                admin1_name = admin.findall(".//" + NS["app"] + "fylkesnavn")
+                if len(admin1_name) > 1:
+                    raise Exception(f"Found more than one admin1 name for Kommune in entry: {id}")
+                admin2_code = admin.findall(".//" + NS["app"] + "kommunenummer")
+                if len(admin2_code) > 1:
+                    raise Exception(f"Found more than one admin2 code for Kommune in entry: {id}")
+                admin2_name = admin.findall(".//" + NS["app"] + "kommunenavn")
+                if len(admin2_name) > 1:
+                    raise Exception(f"Found more than one admin2 navn for Kommune in entry: {id}")
+                admin_codes.append((admin1_code[0].text, admin2_code[0].text))
+                admin_names.append((admin1_name[0].text, admin2_name[0].text))
+
 
             # Find coordinates
             coordinates = ""
@@ -114,6 +136,8 @@ def parse_stedsnavn_data(reader):
                     "name_object_main_group": name_object_main_group.text,
                     "name_object_group": name_object_group.text,
                     "name_object_type": name_object_type.text,
+                    "admin_codes": admin_codes,
+                    "admin_names": admin_names,
                     "alternatenames": alternate_names,
                     "coordinates": coordinates
                 }
@@ -126,10 +150,8 @@ if __name__ == "__main__":
     if not es.indices.exists(INDEX_NAME):
         es.indices.create(index=INDEX_NAME, body=INDEX_SETTINGS)
     file = "data/Basisdata_0000_Norge_4258_Stedsnavn_GML.gml"
-    # file = "data/test_10000000.gml"
+    # file = "data/test_1000000.gml"
 
-    # Doing this with the event "start" leads to missing results when doing findall, i.e., the element does not have all its children.
-    # Seems to work fine with "end"
     reader = iter(et.iterparse(file, events=("end",)))
     actions = parse_stedsnavn_data(reader)
     helpers.bulk(es, actions, chunk_size=500)

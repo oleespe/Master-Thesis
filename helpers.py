@@ -1,5 +1,6 @@
 from typing import Callable, Any, List, Dict
 from math import exp
+from unidecode import unidecode
 import cv2
 import numpy as np
 import pandas as pd
@@ -90,3 +91,33 @@ def print_results(
             i += 1
             if i == n_candidates: break
         print("}\n")
+
+def convert_geonames(
+        geonames_entry: Dict[str, Any]
+) -> Dict[str, Any]:
+    return {"dataset": "geonames", 
+            "id": geonames_entry["geonameid"], 
+            "name": geonames_entry["name"], 
+            "asciiname": geonames_entry["asciiname"],
+            "alternatenames": geonames_entry["alternatenames"],
+            "coordinates": geonames_entry["coordinates"],
+            "feature_code": geonames_entry["feature_code"],
+            "country_code": geonames_entry["country_code"],
+            "admin1_code": geonames_entry["admin1_code"],
+            "admin2_code": geonames_entry["admin2_code"],
+            "population": geonames_entry["population"]}
+
+def convert_stedsnavn(
+        stedsnavn_entry: Dict[str, Any]
+) -> Dict[str, Any]:
+    return {"dataset": "stedsnavn", 
+            "id": stedsnavn_entry["stedsnavnid"], 
+            "name": stedsnavn_entry["name"], 
+            "asciiname": unidecode(stedsnavn_entry["name"]),
+            "alternatenames": stedsnavn_entry["alternatenames"],
+            "coordinates": stedsnavn_entry["coordinates"],
+            "feature_code": stedsnavn_entry["name_object_type"],
+            "country_code": "NO",
+            "admin1_code": geonames_entry["admin1_code"],
+            "admin2_code": geonames_entry["admin2_code"],
+            "population": "0"} # Stedsnavn has no population data
