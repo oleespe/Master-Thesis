@@ -147,7 +147,7 @@ ADMIN2_MAP = {
     "3120": "3016", # Rakkestad
     "3122": "3013", # Marker
     "3124": "3012", # Aremark
-    "3201": "3024", # Bærum ¤
+    "3201": "3024", # Bærum
     "3203": "3025", # Asker
     "3205": "3030", # Lillestrøm
     "3207": "3020", # Nordre Follo
@@ -306,7 +306,100 @@ ADMIN2_MAP = {
     "4632": "4632", # Austrheim
     "4633": "4633", # Fedje
     "4634": "4634", # Masfjorden
-    "4634": "4634", # Masfjorden
+    "4635": "4635", # Gulen
+    "4636": "4636", # Solund
+    "4637": "4637", # Hyllestad
+    "4638": "4638", # Høyanger
+    "4639": "4639", # Vik
+    "4640": "4640", # Sogndal
+    "4641": "4641", # Aurland
+    "4642": "4642", # Lærdal
+    "4643": "4643", # Årdal
+    "4644": "4644", # Luster
+    "4645": "4645", # Askvoll
+    "4646": "4646", # Fjaler
+    "4647": "4647", # Sunnfjord
+    "4648": "4648", # Bremanger
+    "4649": "4649", # Stad
+    "4650": "4650", # Gloppen
+    "4651": "4651", # Stryn
+    "5001": "5001", # Trondheim - Tråante
+    "5006": "5006", # Steinkjer
+    "5007": "5007", # Namsos - Nåavmesjenjaelmie
+    "5014": "5014", # Frøya
+    "5020": "5020", # Osen
+    "5021": "5021", # Oppdal
+    "5022": "5022", # Rennebu
+    "5025": "5025", # Rosse - Røros
+    "5026": "5026", # Holtålen
+    "5027": "5027", # Midtre Gauldal
+    "5028": "5028", # Melhus
+    "5029": "5029", # Skaun
+    "5031": "5031", # Malvik
+    "5032": "5032", # Selbu
+    "5033": "5033", # Tydal
+    "5034": "5034", # Meråker
+    "5035": "5035", # Stjørdal
+    "5036": "5036", # Frosta
+    "5037": "5037", # Levanger
+    "5038": "5038", # Verdal
+    "5041": "5041", # Snåase - Snåsa
+    "5042": "5042", # Lierne
+    "5043": "5043", # Raarvihke - Røyrvik
+    "5044": "5044", # Namsskogan
+    "5045": "5045", # Grong
+    "5046": "5046", # Høylandet
+    "5047": "5047", # Overhalla
+    "5049": "5049", # Flatanger
+    "5052": "5052", # Leka
+    "5053": "5053", # Inderøy
+    "5054": "5054", # Indre Fosen
+    "5055": "5055", # Heim
+    "5056": "5056", # Hitra
+    "5057": "5057", # Ørland
+    "5058": "5058", # Åfjord
+    "5059": "5059", # Orkland
+    "5060": "5060", # Nærøysund
+    "5061": "5061", # Rindal
+    "5501": "5401", # Tromsø
+    "5503": "5402", # Harstad - Hárstták
+    "5510": "5411", # Kvæfjord
+    "5512": "5412", # Tjeldsund - Dielddanuorri
+    "5514": "5413", # Ibestad
+    "5516": "5414", # Gratangen
+    "5518": "5415", # Loabák - Lavangen
+    "5520": "5416", # Bardu
+    "5522": "5417", # Salangen
+    "5524": "5418", # Målselv
+    "5526": "5419", # Sørreisa
+    "5528": "5420", # Dyrøy
+    "5530": "5421", # Senja
+    "5532": "5422", # Balsfjord
+    "5534": "5423", # Karlsøy
+    "5536": "5424", # Lyngen
+    "5538": "5425", # Storfjord - Omasvuotna - Omasvuono
+    "5540": "5426", # Gáivuotna - Kåfjord - Kaivuono
+    "5542": "5427", # Skjervøy
+    "5544": "5428", # Nordreisa - Ráisa - Raisi
+    "5546": "5429", # Kvænangen
+    "5601": "5403", # Alta
+    "5603": "5406", # Hammerfest - Hámmerfeasta
+    "5605": "5444", # Sør-Varanger
+    "5607": "5405", # Vadsø
+    "5610": "5437", # Kárášjohka - Karasjok
+    "5612": "5430", # Guovdageaidnu - Kautokeino
+    "5614": "5432", # Loppa
+    "5616": "5433", # Hasvik
+    "5618": "5434", # Måsøy
+    "5620": "5435", # Nordkapp
+    "5622": "5436", # Porsanger - Porsáŋgu - Porsanki
+    "5624": "5438", # Lebesby
+    "5626": "5439", # Gamvik
+    "5628": "5441", # Deatnu - Tana
+    "5630": "5440", # Berlevåg
+    "5632": "5443", # Båtsfjord
+    "5634": "5404", # Vardø
+    "5636": "5442", # Unjárga - Nesseby
 }
 
 # TODO: Finish or delete this.

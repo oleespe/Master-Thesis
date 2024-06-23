@@ -171,7 +171,7 @@ def find_candidates(
         # TODO: Proper error handling
         if len(q_results) != 1:
             print("Got an unexpected number of results from country query.")
-        return [q_results[0].to_dict()]
+        return [convert_geonames(q_results[0].to_dict())]
 
     q_results = s.query(q)[0:1000].execute()
 
@@ -211,7 +211,7 @@ def find_candidates(
         }
     }
     q_results = s.query(q)[0:1000].execute()
-    results = [result.to_dict() for result in q_results if result["name"] == place_name or place_name in result["alternatenames"]]
+    results = [convert_stedsnavn(result.to_dict()) for result in q_results if result["name"] == place_name or place_name in result["alternatenames"]]
     return results
     # TODO: If place name is not in "name", "asciiname" or "alternatenames", we currently return nothing.
 
@@ -284,7 +284,7 @@ def infer_countries(
         candidate_countries = []
         if len(location["candidates"]) == 1:
             candidate = location["candidates"][0]
-            if candidate["feature_code"] == "PCLI":
+            if candidate["feature_code"] == "PCLI" or candidate["feature_code"] == "nasjon": # candidate["feature_code"] == "nasjon" is technically redundant as these entries should always be found by GeoNames
                 if candidate["country_code"] not in text_mentions:
                     text_mentions[candidate["country_code"]] = 1
                 else: text_mentions[candidate["country_code"]] += 1
@@ -453,7 +453,7 @@ def get_ancestors(
     searched_entries = {}
     s = Search(using=es, index="geonames_custom")
     # Search for country geonames entry.
-    if feature_code != "PCLI":
+    if not (feature_code == "PCLI" or feature_code == "nasjon"):
         if country_code not in searched_entries:
             q = {
                 "bool": {
@@ -477,7 +477,7 @@ def get_ancestors(
             ancestors["country"] = searched_entries[country_code]
 
     # Search for admin1 geonames entry.
-    if f"{country_code}.{admin1_code}" in ADMIN1_LIST and feature_code != "ADM1":
+    if f"{country_code}.{admin1_code}" in ADMIN1_LIST and not (feature_code == "ADM1" or feature_code == "fylke"):
         if f"{country_code}.{admin1_code}" not in searched_entries:
             q = {
                 "bool": {
@@ -502,7 +502,7 @@ def get_ancestors(
             ancestors["admin1"] = searched_entries[f"{country_code}.{admin1_code}"]
 
     # Search for admin2 geonames entry.
-    if f"{country_code}.{admin1_code}.{admin2_code}" in ADMIN2_LIST and feature_code != "ADM2":
+    if f"{country_code}.{admin1_code}.{admin2_code}" in ADMIN2_LIST and not (feature_code != "ADM2" or feature_code != "kommune"):
         if f"{country_code}.{admin1_code}.{admin2_code}" not in searched_entries:
             q = {
                 "bool": {

@@ -1,6 +1,7 @@
 from typing import Callable, Any, List, Dict
 from math import exp
 from unidecode import unidecode
+from lists import *
 import cv2
 import numpy as np
 import pandas as pd
@@ -75,7 +76,7 @@ def logistic_function(
 def print_results(
         locations_data: List[Dict[str, Any]],
         fields: List[str] = ["entity_name"],
-        candidate_fields: List[str] = ["name", "geonameid", "country_code", "coordinates", "score"],
+        candidate_fields: List[str] = ["name", "dataset", "id", "country_code", "coordinates", "score"],
         n_candidates: int = 2
 ):
     for location in locations_data:
@@ -107,6 +108,15 @@ def convert_geonames(
             "admin2_code": geonames_entry["admin2_code"],
             "population": geonames_entry["population"]}
 
+# TODO: Stedsnavn entries can be part of multiple administrative divisions. Should augment the algorithm so that it can handle multiple entries.
+# For now we simply use the first entry administrative divisions.
+# TODO: We are currently using the ADMIN1_MAP and ADMIN2_MAP dictionaries to convert stedsnavn entry codes into geonames ones.
+# This is because the geonames index and accompanying admin code files still use outdated admin codes.
+# In the future, geonames will probably update its info, at which point these maps will be unnecessary.
+# https://www.kartverket.no/til-lands/fakta-om-norge/norske-fylke-og-kommunar
+# TODO: Apparently Stedsnavn also has nation entries, in which case all of this makes no sense.
+# Either need to fix or make sure these entries are not indexed.
+# Should not be an issue for the geoparser as it will always find nation candidates from geonames.
 def convert_stedsnavn(
         stedsnavn_entry: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -116,8 +126,8 @@ def convert_stedsnavn(
             "asciiname": unidecode(stedsnavn_entry["name"]),
             "alternatenames": stedsnavn_entry["alternatenames"],
             "coordinates": stedsnavn_entry["coordinates"],
-            "feature_code": stedsnavn_entry["name_object_type"],
+            "feature_code": stedsnavn_entry["name_object_type"], # Not really a code for Stedsnavn, but will use the same name anyways
             "country_code": "NO",
-            "admin1_code": geonames_entry["admin1_code"],
-            "admin2_code": geonames_entry["admin2_code"],
+            "admin1_code": ADMIN1_MAP[stedsnavn_entry["admin_codes"][0][0]], 
+            "admin2_code": ADMIN2_MAP[stedsnavn_entry["admin_codes"][0][1]],
             "population": "0"} # Stedsnavn has no population data
