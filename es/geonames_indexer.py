@@ -70,6 +70,7 @@ if __name__ == "__main__":
         print(f"Invalid number of arguments. Script takes 1 argument but {len(sys.argv)-1} were provided.")
         exit()
     file = sys.argv[1]
+    
     reader = csv.reader(file, delimiter="\t")
     actions = parse_geonames_data(reader)
     helpers.bulk(es, actions, chunk_size=500)
