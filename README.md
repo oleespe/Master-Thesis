@@ -8,7 +8,7 @@ Actual geoparser:
 
 ```console
 git clone https://github.com/oleespe/Master-Thesis
-pip install requirements.txt
+pip install -r requirements.txt
 ```
 
 Pytesseract:
@@ -27,10 +27,14 @@ Elasticsearch and Geographical Datasets:
 <https://www.elastic.co/guide/en/elasticsearch/reference/7.15/install-elasticsearch.html>
 
 ```console
-mkdir es/data
-wget -P es/data https://download.geonames.org/export/dump/allCountries.zip
-wget -P es/data https://download.geonames.org/export/dump/admin1CodesASCII.txt
-wget -P es/data https://download.geonames.org/export/dump/admin2Codes.txt
+mkdir data
+
+wget -P data https://download.geonames.org/export/dump/allCountries.zip
+unzip data/allCountries.zip -d data
+rm data/allCountries.zip
+
+wget -P data https://download.geonames.org/export/dump/admin1CodesASCII.txt
+wget -P data https://download.geonames.org/export/dump/admin2Codes.txt
 ```
 
 <https://kartkatalog.geonorge.no/metadata/stedsnavn-komplett-ssr/e1c50348-962d-4047-8325-bdc265c853ed>

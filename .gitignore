@@ -2,7 +2,7 @@ test*
 geonames_indexer_mordecai.py
 
 /__pycache__
-/es/data
+/data
 /sample_data
 /*env
 /results

@@ -1,5 +1,6 @@
 from elasticsearch import Elasticsearch, helpers
 import xml.etree.ElementTree as et
+import sys
 
 
 INDEX_NAME = "stedsnavn"
@@ -149,8 +150,10 @@ if __name__ == "__main__":
     es = Elasticsearch("http://localhost:9200")
     if not es.indices.exists(INDEX_NAME):
         es.indices.create(index=INDEX_NAME, body=INDEX_SETTINGS)
-    file = "data/Basisdata_0000_Norge_4258_Stedsnavn_GML.gml"
-    # file = "data/test_1000000.gml"
+    if len(sys.argv) != 2:
+        print(f"Invalid number of arguments. Script takes 1 argument but {len(sys.argv)-1} were provided.")
+        exit()
+    file = sys.argv[1]
 
     reader = iter(et.iterparse(file, events=("end",)))
     actions = parse_stedsnavn_data(reader)

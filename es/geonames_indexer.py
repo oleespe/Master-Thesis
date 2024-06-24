@@ -1,3 +1,4 @@
+import sys
 from elasticsearch import Elasticsearch, helpers
 from tqdm import tqdm
 import csv
@@ -65,8 +66,11 @@ if __name__ == "__main__":
     es = Elasticsearch("http://localhost:9200")
     if not es.indices.exists(INDEX_NAME):
         es.indices.create(index=INDEX_NAME, body=INDEX_SETTINGS)
-    f = open("data/allCountries.txt", "rt", encoding="utf-8")
-    reader = csv.reader(f, delimiter="\t")
+    if len(sys.argv) != 2:
+        print(f"Invalid number of arguments. Script takes 1 argument but {len(sys.argv)-1} were provided.")
+        exit()
+    file = sys.argv[1]
+    reader = csv.reader(file, delimiter="\t")
     actions = parse_geonames_data(reader)
     helpers.bulk(es, actions, chunk_size=500)
     es.indices.refresh(index=INDEX_NAME)
