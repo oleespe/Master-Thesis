@@ -13,8 +13,8 @@ import pytesseract
 import numpy as np
 
 # These are read here to increase performance.
-ADMIN1_LIST = read_admin1("es/data/admin1CodesASCII.txt")[0].to_list()
-ADMIN2_LIST = read_admin2("es/data/admin2Codes.txt")[0].to_list()
+ADMIN1_LIST = read_admin1("data/admin1CodesASCII.txt")[0].to_list()
+ADMIN2_LIST = read_admin2("data/admin2Codes.txt")[0].to_list()
 
 def geoparse_pdf(
         file_path: str,

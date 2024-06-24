@@ -40,6 +40,6 @@ wget -P data https://download.geonames.org/export/dump/admin2Codes.txt
 <https://kartkatalog.geonorge.no/metadata/stedsnavn-komplett-ssr/e1c50348-962d-4047-8325-bdc265c853ed>
 
 ```console
-python es/geonames_indexer.py
-python es/stedsnavn_indexer.py
+python es/geonames_indexer.py data/allCountries.txt
+python es/stedsnavn_indexer.py data/Basisdata_0000_Norge_4258_stedsnavn_GML.gml
 ```
