@@ -85,6 +85,9 @@ python es/stedsnavn_indexer.py data/Basisdata_0000_Norge_4258_stedsnavn_GML.gml
 
 ## Example Usage
 
+There are two main ways of using the geoparser.
+The first is to used the main `geoparse()` functions with any text input as shown below.
+
 ```py
 results, locations_data = geoparse("Jeg kommer fra Ølensvåg i Rogaland")
 print_results(results)
@@ -112,4 +115,11 @@ candidates: {
  score: 3.049605544218437
  }
 }
+```
+
+Another way of using the geoparser is to use `geoparse_pdf()`, which takes the filepath of a pdf file as input.
+Furthermore, this function uses one of two different pdf parser: `ocr_parse()` or `pypdf2_parse()`.
+
+```py
+results, locations_data = geoparse_pdf(file_path, pdf_parser=ocr_parse, is_wikipedia=True)
 ```
