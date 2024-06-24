@@ -1,10 +1,11 @@
 # Norwegian Language Geoparsing
 
-This project implements a geoparser designed specifically for the Norwegian language.
+This project implements a geoparser designed to be used on Norwegian language text.
+The geoparser is designed to process entire PDF files, but should also work on smaller texts.
 
 ## Installation
 
-It is recommended that any installation is in a virtual environment.
+It is recommended that any installation is done in a virtual environment.
 
 ### Geoparser
 
@@ -48,7 +49,7 @@ These need to both be downloaded and indexed with Elasticsearch.
 GeoNames contains toponym entries from all over the world.
 To index GeoNames, the file `allCountries.txt` needs to be downloaded and put in the `data/` folder.
 `allCountries.txt` contains all approximately 11 million entries in GeoNames.
-The files `admin1CodesASCII.txt` and `admin2Codes.txt` need to also be downloaded and put in the same folder, as they are used in the geoparsing algorithm.
+The files `admin1CodesASCII.txt` and `admin2Codes.txt` also need to be downloaded and put in the same folder, as they are used in the geoparsing algorithm.
 The commands below describe how to do this.
 
 ```console
@@ -68,16 +69,47 @@ The Stedsnavn dataset is a Norway only dataset, i.e., containing only entries fo
 It needs to be downloaded manually using the following link: <https://kartkatalog.geonorge.no/metadata/stedsnavn-komplett-ssr/e1c50348-962d-4047-8325-bdc265c853ed>.
 Beware that the site is in Norwegian, but can be changed to English using the menu.
 To actually download the dataset, first click download and then _Go to download_ via the cloud icon.
-You will then be taken to another site, where you simply click all default options where relevant, and then the download button.
+You will then be taken to another site, where you simply click all the default options where relevant, and then the download button.
 Similarly to GeoNames, the downloaded file needs to be unzipped and placed in the `data/` folder.
 
 **Indexing:**
 
 The indexing process itself is done using the following commands.
 Keep in mind that the scripts use the file paths of the dataset files as arguments.
-If these are moved or renamed, the argument needs to renamed as well.
+If these are moved or renamed, the argument needs to changed as well.
 
 ```console
 python es/geonames_indexer.py data/allCountries.txt
 python es/stedsnavn_indexer.py data/Basisdata_0000_Norge_4258_stedsnavn_GML.gml
+```
+
+## Example Usage
+
+```py
+results, locations_data = geoparse("Jeg kommer fra Ølensvåg i Rogaland")
+print_results(results)
+
+entity_name: Ølensvåg
+candidates: {
+ {
+ name: Ølensvåg
+ dataset: geonames
+ id: 8591275
+ country_code: NO
+ coordinates: 59.59784,5.73911
+ score: 2.319202922022118
+ }
+}
+
+entity_name: Rogaland
+candidates: {
+ {
+ name: Rogaland Fylke
+ dataset: geonames
+ id: 3141558
+ country_code: NO
+ coordinates: 59.09608,6.20442
+ score: 3.049605544218437
+ }
+}
 ```
