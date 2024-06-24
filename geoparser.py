@@ -107,8 +107,12 @@ def geoparse(
     searched_entries = {}
     for location in locations_data:
         rank_advanced(location, locations_data, es, text, searched_entries, inferred_countries, inferred_adm1, pop_weight, alt_names_weight)
-    results = handle_duplicates(entity_names, locations_data)
-    return results, locations_data
+    return {
+        "inferred_countries": inferred_countries, 
+        "inferred_admin1": inferred_adm1, 
+        "results": handle_duplicates(entity_names, locations_data)
+    }
+
 
 def handle_duplicates(
         entity_names: List[str],

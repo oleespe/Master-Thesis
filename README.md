@@ -89,8 +89,8 @@ There are two main ways of using the geoparser.
 The first is to used the main `geoparse()` functions with any text input as shown below.
 
 ```py
-results, locations_data = geoparse("Jeg kommer fra Ølensvåg i Rogaland")
-print_results(results)
+results = geoparse("Jeg kommer fra Ølensvåg i Rogaland")
+print_results(results["results"])
 
 entity_name: Ølensvåg
 candidates: {
@@ -119,7 +119,8 @@ candidates: {
 
 Another way of using the geoparser is to use `geoparse_pdf()`, which takes the filepath of a pdf file as input.
 Furthermore, this function uses one of two different pdf parser: `ocr_parse()` or `pypdf2_parse()`.
+The results from this function uses the same format as the base `geoparse()` function.
 
 ```py
-results, locations_data = geoparse_pdf(file_path, pdf_parser=ocr_parse, is_wikipedia=True)
+results = geoparse_pdf(file_path, pdf_parser=ocr_parse, is_wikipedia=True)
 ```
