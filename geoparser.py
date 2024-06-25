@@ -20,18 +20,21 @@ def geoparse_pdf(
         file_path: str,
         pdf_parser: Callable[[str, bool], str], # pypdf2 or ocr
         is_wikipedia: bool, # Is the pdf a wikipedia article?
+        verbose: bool = True,
         pop_weight: float = 1,
         alt_names_weight: float = 1,
         co_candidates_weight: float = 1,
         co_text_weight: float = 1,
         adm1_candidates_weight: float = 1,
         adm1_text_weight: float = 1,
-        co_cutoff: float = 0.05,
-        adm1_cutoff: float = 0.05
+        country_cutoff: int = 3,
+        adm1_cutoff: int = 3
 ) -> Dict[str, Any]:
+    if verbose: print(f"Started parsing PDF with path: {file_path}")
     text = pdf_parser(file_path, is_wikipedia)
+    if verbose: print(f"Finished parsing PDF")
     return geoparse(text, pop_weight, alt_names_weight, co_candidates_weight, 
-                    co_text_weight, adm1_candidates_weight, adm1_text_weight, co_cutoff, adm1_cutoff)
+                    co_text_weight, adm1_candidates_weight, adm1_text_weight, country_cutoff, adm1_cutoff)
 
 def pypdf2_parse(
         file_path: str,
@@ -66,15 +69,17 @@ def ocr_parse(
 
 def geoparse(
         text: str,
+        verbose: bool = True,
         pop_weight: float = 1,
         alt_names_weight: float = 1,
         co_candidates_weight: float = 1,
         co_text_weight: float = 1,
         adm1_candidates_weight: float = 1,
         adm1_text_weight: float = 1,
-        co_cutoff: float = 0.05,
-        adm1_cutoff: float = 0.05
+        country_cutoff: int = 3,
+        adm1_cutoff: int = 3
 ) -> List[Dict[str, Any]]:
+    if verbose: print("Started geoparsing process")
     locations_data = []
     nlp = spacy.load("nb_core_news_lg")
     doc = nlp(text)
@@ -98,15 +103,18 @@ def geoparse(
     entity_names = [location["entity_name"] for location in locations_data]
 
     # Iterate through found place names.
+    if verbose: print("Finding candidates")
     for location in locations_data:
         location["candidates"] = find_candidates(es, location["entity_name"])
-
-    inferred_countries = infer_countries(locations_data, co_candidates_weight, co_text_weight, co_cutoff)
+    
+    inferred_countries = infer_countries(locations_data, co_candidates_weight, co_text_weight, country_cutoff)
     inferred_adm1 = infer_adm1(locations_data, es, adm1_candidates_weight, adm1_text_weight, adm1_cutoff)
     
+    if verbose: print("Ranking candidates")
     searched_entries = {}
     for location in locations_data:
         rank_advanced(location, locations_data, es, text, searched_entries, inferred_countries, inferred_adm1, pop_weight, alt_names_weight)
+    if verbose: print("Finished geoparsing process")
     return {
         "inferred_countries": inferred_countries, 
         "inferred_admin1": inferred_adm1, 
@@ -149,7 +157,7 @@ def handle_duplicates(
 
 def find_candidates(
         es: Elasticsearch,
-        place_name: str
+        place_name: str,
 ) -> List[Dict[str, Any]]:
     # Difficulties:
     # 1. We generally want to rank the highest scoring results, i.e., the ones whose name most closely resembles the retrieved place name.
@@ -174,7 +182,7 @@ def find_candidates(
         q_results = s.filter("term", feature_code="PCLI").query(q).execute() # Should in theory only ever return one value anyways.
         # TODO: Proper error handling
         if len(q_results) != 1:
-            print("Got an unexpected number of results from country query.")
+            print(f"Warning: Got an unexpected number of results from country query: {len(q_results)}.")
         return [convert_geonames(q_results[0].to_dict())]
 
     q_results = s.query(q)[0:1000].execute()
@@ -274,13 +282,12 @@ def calculate_entity_distance(
 
 def infer_countries(
         locations_data: List[Dict[str, Any]],
-        candidates_weight: int = 1,
-        text_weight: int = 1,
-        cutoff: int = 0.05
+        candidates_weight: float = 1,
+        text_weight: float = 1,
+        cutoff: int = 3
 ) -> Dict[str, float]:
-    # TODO: Proper error handling
     if candidates_weight == 0 and text_weight == 0:
-        print("Cannot have both weights equaling zero")
+        raise ValueError("both candidates_weight and text_weight are set to zero")
 
     candidates_mentions = {}
     text_mentions = {}
@@ -313,30 +320,42 @@ def infer_countries(
         else:
             weighted_mentions[key] = (candidates_weight * norm_weights_factor * (candidates_mentions[key] / total_mentions_candidates)) + (text_weight * norm_weights_factor * (text_mentions[key] / total_mentions_text))
 
-    # TODO: Proper error handling
     if not isclose(sum(weighted_mentions.values()), 1):
-        print("Got weighted mentions not properly normalized: ", sum(weighted_mentions.values()))
+        print("Warning: Got weighted mentions not properly normalized: ", sum(weighted_mentions.values()))
     
+    # Select top n countries.
+    top_n_list = sorted(zip(weighted_mentions.values(), weighted_mentions.keys()), reverse=True)[:cutoff]
+    top_n = {code: value for value, code in top_n_list}
+    factor = 1 / sum([value for value, _ in top_n_list])
+    top_n_refactored = {code: value * factor for code, value in top_n.items()}
+    total_sum_cutoff = 0
+    for _, value in top_n_refactored.items():
+        total_sum_cutoff += sum(value.values())
+    if not isclose(total_sum_cutoff, 1):
+        print("Warning: Got weighted mentions cutoff not properly normalized: ", top_n_refactored)
+    
+    return top_n_refactored
+
     # Remove values below cutoff and re-normalize
     factor = 1 / sum([value for value in weighted_mentions.values() if value >= cutoff])
     weighted_mentions_cutoff = {key: value*factor for key, value in weighted_mentions.items() if value >= cutoff}
 
-    # TODO: Proper error handling
     if not isclose(sum(weighted_mentions_cutoff.values()), 1):
-        print("Got weighted mentions cutoff not properly normalized: ", sum(weighted_mentions_cutoff.values()))
+        print("Warning: Got weighted mentions cutoff not properly normalized: ", sum(weighted_mentions_cutoff.values()))
 
     return dict(sorted(weighted_mentions_cutoff.items(), key=lambda item: item[1], reverse=True))
 
 def infer_adm1(
         locations_data: List[Dict[str, Any]],
         es: Elasticsearch,
-        candidates_weight: int = 1,
-        text_weight: int = 1,
-        cutoff: int = 0.05
+        candidates_weight: float = 1,
+        text_weight: float = 1,
+        cutoff: int = 3
 ):
     # TODO: Proper error handling
     if candidates_weight == 0 and text_weight == 0:
-        print("Cannot have both weights equaling zero")
+        raise ValueError("both candidates_weight and text_weight are set to zero")
+    
     # Count number of times an adm1 is in at least one of the candidates for a toponym
     candidate_mentions = {}
     for location in locations_data:
@@ -352,6 +371,8 @@ def infer_adm1(
                 candidate_mentions[candidate["country_code"]][candidate["admin1_code"]] = 1
             else: candidate_mentions[candidate["country_code"]][candidate["admin1_code"]] += 1
     
+    # TODO: The statement below might not be true if the NER step fails to find the in text mention?
+
     # For all adm1 mentions retrieved in the previous process, find their entry in Elasticsearch.
     # This should in theory also always include any of the potential adm1 entities found in the text,
     # as it should then be one of the results counted from the previous process.
@@ -373,10 +394,10 @@ def infer_adm1(
 
             # TODO: Need actual error handling here. Probably set up some sort of logging.
             if len(q_results) > 1:
-                print(f"Found more than one result for adm1 query. adm1: {adm1_code}, country: {country_code}")
+                print(f"Warning: Found more than one result for adm1 query. adm1: {adm1_code}, country: {country_code}")
                 continue
             if len(q_results) == 0:
-                print(f"Found no results for adm1 query. adm1: {adm1_code}, country: {country_code}")
+                print(f"Warning: Found no results for adm1 query. adm1: {adm1_code}, country: {country_code}")
                 continue
             # Should only ever be one result in q_results here anyways, so it is fine to use indexing.
             adm1_mentions.append(q_results[0].to_dict())
@@ -386,6 +407,8 @@ def infer_adm1(
     for country, value in text_mentions.items():
         for adm1, _ in value.items():
             text_mentions[country][adm1] = 0
+    
+    # Count the number of times an admin1 is mentioned in the text.
     for location in locations_data:
         for adm1_mention in adm1_mentions:
             if location["entity_name"] == adm1_mention["name"] or location["entity_name"] == adm1_mention["asciiname"] or location["entity_name"] in adm1_mention["alternatenames"]:
@@ -405,16 +428,44 @@ def infer_adm1(
     for country_code, country_dict in candidate_mentions.items():
         for admin1_code, _ in country_dict.items():
             if country_code not in weighted_mentions: weighted_mentions[country_code] = {}
-            weighted_mentions[country_code][admin1_code] = (candidates_weight * norm_weights_factor * (candidate_mentions[country_code][admin1_code] / total_candidate_mentions)) \
-                                                        + (text_weight * norm_weights_factor * (text_mentions[country_code][admin1_code] / total_text_mentions))
+            candidates_weighted_mentions = candidates_weight * norm_weights_factor * (candidate_mentions[country_code][admin1_code] / total_candidate_mentions) if total_candidate_mentions != 0 else 0
+            text_weighted_mentions = text_weight * norm_weights_factor * (text_mentions[country_code][admin1_code] / total_text_mentions) if total_text_mentions != 0 else 0
+            weighted_mentions[country_code][admin1_code] = candidates_weighted_mentions + text_weighted_mentions
     
     # Check if weighted dictionary is properly normalized
     total_sum = 0
     for _, value in weighted_mentions.items():
         total_sum += sum(value.values())
-    # TODO: Proper error handling
     if not isclose(total_sum, 1):
-        print("Got weighted mentions not properly normalized: ", total_sum)
+        print("Warning: Got weighted mentions not properly normalized: ", total_sum)
+
+    # TODO: Fix this properly tomorrow. Needs to also be implemented for infer_countries()
+    simplified_weighted_mentions = {} # Instead of {country_code: {admin_code: value}} we have {country_code.admin_code: value}
+    for country_code, country_dict in weighted_mentions.items():
+        for admin1_code, value in country_dict.items():
+            simplified_weighted_mentions[f"{country_code}.{admin1_code}"] = value
+    top_n_list = sorted(zip(simplified_weighted_mentions.values(), simplified_weighted_mentions.keys()), reverse=True)[:cutoff]
+    top_n = {}
+    for value, code in top_n_list:
+        code_split = code.split(".")
+        country_code = code_split[0]
+        admin1_code = code_split[1]
+        if country_code not in top_n: top_n[country_code] = {}
+        top_n[country_code][admin1_code] = value
+
+    factor = 1 / sum([value for value, _ in top_n_list])
+    top_n_refactored = {}
+    for country_code, country_dict in top_n.items():
+        for admin1_code, value in country_dict.items():
+            if country_code not in top_n_refactored: top_n_refactored[country_code] = {}
+            top_n_refactored[country_code][admin1_code] = value * factor
+
+    total_sum_cutoff = 0
+    for _, value in top_n_refactored.items():
+        total_sum_cutoff += sum(value.values())
+    if not isclose(total_sum_cutoff, 1):
+        print("Warning: Got weighted mentions cutoff not properly normalized: ", top_n_refactored)
+    return top_n_refactored
 
     # Remove values below cutoff and re-normalize
     sum_cutoff = 0
@@ -428,15 +479,13 @@ def infer_adm1(
             if value >= cutoff:
                 if country_code not in weighted_mentions_cutoff: weighted_mentions_cutoff[country_code] = {}
                 weighted_mentions_cutoff[country_code][admin1_code] = value * factor
-    # weighted_mentions_cutoff = {key: value*factor for key, value in weighted_mentions.items() if value >= cutoff}
 
     # Check if weighted cutoff dictionary is properly normalized
     total_sum_cutoff = 0
     for _, value in weighted_mentions_cutoff.items():
         total_sum_cutoff += sum(value.values())
-    # TODO: Proper error handling
     if not isclose(total_sum, 1):
-        print("Got weighted mentions cutoff not properly normalized: ", total_sum_cutoff)
+        print("Warning: Got weighted mentions cutoff not properly normalized: ", total_sum_cutoff)
 
     return weighted_mentions_cutoff
 
@@ -469,11 +518,10 @@ def get_ancestors(
             }
             q_results = s.query(q).execute()
 
-            # TODO: Need actual error handling here. Probably set up some sort of logging.
             if len(q_results) > 1:
-                print(f"Found more than one result for country query. country: {country_code}")
+                print(f"Warning: Found more than one result for country query. country: {country_code}")
             elif len(q_results) == 0:
-                print(f"Found no results for country query. country: {country_code}")
+                print(f"Warning: Found no results for country query. country: {country_code}")
             else:
                 ancestors["country"] = q_results[0].to_dict()
                 searched_entries[country_code] = q_results[0].to_dict()
@@ -494,11 +542,10 @@ def get_ancestors(
             }
             q_results = s.query(q).execute()
 
-            # TODO: Need actual error handling here. Probably set up some sort of logging.
             if len(q_results) > 1:
-                print(f"Found more than one result for adm1 query. adm1: {admin1_code}, country: {country_code}")
+                print(f"Warning: Found more than one result for adm1 query. adm1: {admin1_code}, country: {country_code}")
             elif len(q_results) == 0:
-                print(f"Found no results for adm1 query. adm1: {admin1_code}, country: {country_code}")
+                print(f"Warning: Found no results for adm1 query. adm1: {admin1_code}, country: {country_code}")
             else:
                 ancestors["admin1"] = q_results[0].to_dict()
                 searched_entries[f"{country_code}.{admin1_code}"] = q_results[0].to_dict()
@@ -520,11 +567,10 @@ def get_ancestors(
             }
             q_results = s.query(q).execute()
 
-            # TODO: Need actual error handling here. Probably set up some sort of logging.
             if len(q_results) > 1:
-                print(f"Found more than one result for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
+                print(f"Warning: Found more than one result for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
             elif len(q_results) == 0:
-                print(f"Found no results for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
+                print(f"Warning: Found no results for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
             else:
                 ancestors["admin2"] = q_results[0].to_dict()
                 searched_entries[f"{country_code}.{admin1_code}.{admin2_code}"] = q_results[0].to_dict()
