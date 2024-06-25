@@ -328,9 +328,7 @@ def infer_countries(
     top_n = {code: value for value, code in top_n_list}
     factor = 1 / sum([value for value, _ in top_n_list])
     top_n_refactored = {code: value * factor for code, value in top_n.items()}
-    total_sum_cutoff = 0
-    for _, value in top_n_refactored.items():
-        total_sum_cutoff += sum(value.values())
+    total_sum_cutoff = sum(top_n_refactored.values())
     if not isclose(total_sum_cutoff, 1):
         print("Warning: Got weighted mentions cutoff not properly normalized: ", top_n_refactored)
     
