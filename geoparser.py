@@ -33,7 +33,7 @@ def geoparse_pdf(
     if verbose: print(f"Started parsing PDF with path: {file_path}")
     text = pdf_parser(file_path, is_wikipedia)
     if verbose: print(f"Finished parsing PDF")
-    return geoparse(text, pop_weight, alt_names_weight, co_candidates_weight, 
+    return geoparse(text, verbose, pop_weight, alt_names_weight, co_candidates_weight, 
                     co_text_weight, adm1_candidates_weight, adm1_text_weight, country_cutoff, adm1_cutoff)
 
 def pypdf2_parse(
@@ -223,6 +223,8 @@ def find_candidates(
         }
     }
     q_results = s.query(q)[0:1000].execute()
+    # TODO: This currently omits results based on capitalization, e.g., query for "Odda Kommune" will result in "Odda kommune",
+    # which therefore gets omitted in the below check.
     results = [convert_stedsnavn(result.to_dict()) for result in q_results if result["name"] == place_name or place_name in result["alternatenames"]]
     return results
     # TODO: If place name is not in "name", "asciiname" or "alternatenames", we currently return nothing.
@@ -287,7 +289,7 @@ def infer_countries(
         cutoff: int = 3
 ) -> Dict[str, float]:
     if candidates_weight == 0 and text_weight == 0:
-        raise ValueError("both candidates_weight and text_weight are set to zero")
+        raise ValueError("both candidates_weight and text_weight are set to 0")
 
     candidates_mentions = {}
     text_mentions = {}
@@ -310,7 +312,7 @@ def infer_countries(
     weighted_mentions = {}
     total_mentions_candidates = sum(candidates_mentions.values())
     total_mentions_text = sum(text_mentions.values())
-    norm_weights_factor = 1 / (candidates_weight + text_weight) 
+    norm_weights_factor = 1 / (candidates_weight + text_weight)
     for key, _ in candidates_mentions.items():
         if not text_mentions:
             weighted_mentions[key] = candidates_mentions[key] / total_mentions_candidates
@@ -352,7 +354,7 @@ def infer_adm1(
 ):
     # TODO: Proper error handling
     if candidates_weight == 0 and text_weight == 0:
-        raise ValueError("both candidates_weight and text_weight are set to zero")
+        raise ValueError("both candidates_weight and text_weight are set to 0")
     
     # Count number of times an adm1 is in at least one of the candidates for a toponym
     candidate_mentions = {}
@@ -696,6 +698,7 @@ def hierarchy_score(
         if temp_score > score: score = temp_score
     return score
 
+# TODO: Weights should not be applied here, but rather in the overall score
 def pop_score(
         candidate_pop: int,
         weight: int
@@ -789,3 +792,9 @@ def print_solutions_mappings(
             print(f"({key}, {value}) -> None")
             continue
         print(f"({key}, {value}) -> ({matching_placenames[key]['best_candidate']['name']}, {matching_placenames[key]['best_candidate']['geonameid']})")
+
+
+# TODO: Should try and implement an algorithm that tries to find hierarchical pairs.
+# For instance, in the text "Jeg reiste fra Bergen til Oslo", it determines Bergen as Bergen County, USA, and Oslo as Oslo, Norway.
+# In cases like these, it should recognize that these can both potentially belong to Norway, 
+# and therefore boost their corresponding scores accordingly.
