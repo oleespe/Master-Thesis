@@ -1,7 +1,8 @@
-from typing import Callable, Any, List, Dict
+from typing import Any, List, Dict, Union
 from math import exp
 from unidecode import unidecode
 from lists import *
+from tabulate import tabulate
 import cv2
 import numpy as np
 import pandas as pd
@@ -17,10 +18,10 @@ def create_solutions_dict(
         # but with no record in the geonames database.
         # This can happen if the location is very obscure or if it is a historic location etc.
         # For all purposes, we do not consider these when determining accuracy.
-        if row["geonameid"] == -1:
+        if row["id"] == 0:
             # solutions.drop(i, inplace=True)
             continue
-        solutions_dict[row["name"]] = row["geonameid"]
+        solutions_dict[row["name"]] = {"id": row["id"], "dataset": row["dataset"]}
     return solutions_dict
 
 # Deskew image for ocr parse.
@@ -60,9 +61,10 @@ def write_csv_results(
     with open(file_path, "w") as file:
         file.write("name,id,coordinates,database\n")
         for location in locations_data:
-            if len(location["candidates"]) > 0:
-                best_candidate = location["candidates"][0]
-                file.write(f"{best_candidate['name']},{best_candidate['id']},\"{best_candidate['coordinates']}\",{best_candidate['dataset']}\n")
+            top_candidate = get_top_candidate(location)
+            if top_candidate is None:
+                continue
+            file.write(f"\"{top_candidate['name']}\",{top_candidate['id']},\"{top_candidate['coordinates']}\",{top_candidate['dataset']}\n")
 
 def logistic_function(
         x: float,
@@ -91,6 +93,66 @@ def print_results(
             i += 1
             if i == n_candidates: break
         print("}\n")
+
+def print_all_mappings(
+        file_path: str,
+        results: List[Dict[str, Any]]
+) -> None:
+    """
+    Print all mappings from the geoparser results.
+    Depends on there being a solutions file to work.
+
+    Parameters
+    ----------
+    file_path : str
+        File path to the solutions file.
+    results : List[Dict[str, Any]]
+        Results from geoparsing.
+    """
+    print_order = [[], [], [], [], []]
+    solutions_dict = create_solutions_dict(file_path)
+    for location_name, value in solutions_dict.items():
+        match_found = False
+        for result in results:
+            top_candidate = get_top_candidate(result)
+            if top_candidate is None:
+                if location_name == result["entity_name"]:
+                    print_order[0].append([location_name, value['id'], value['dataset'], result['entity_name'], "None", "None", "None"])
+                    # print_order[0].append(f"({location_name}, {value['id']}, {value['dataset']}) -> Entity name: {result['entity_name']}, Top candidate: None")
+                    match_found = True
+                    break
+                continue
+            if location_name == top_candidate["name"] or location_name == top_candidate["asciiname"] or location_name in top_candidate["alternatenames"]:
+                print_order[1].append([location_name, value['id'], value['dataset'], result['entity_name'], top_candidate['name'], top_candidate['id'], top_candidate['dataset']])
+                # print_order[1].append(f"({location_name}, {value['id']}, {value['dataset']}) -> Entity name: {result['entity_name']}, Top candidate: ({top_candidate['name']}, {top_candidate['id']}, {top_candidate['dataset']})")
+                match_found = True
+                break
+        if not match_found:
+            print_order[2].append([location_name, value['id'], value['dataset'], "None", "None", "None", "None"])
+            # print_order[2].append(f"({location_name}, {value['id']}, {value['dataset']}) -> Entity name: None, Top candidate: None")
+    for result in results:
+        top_candidate = get_top_candidate(result)
+        if top_candidate is None:
+            if result["entity_name"] not in solutions_dict.keys():
+                print_order[3].append(["None", "None", "None", result['entity_name'], "None", "None", "None"])
+                # print_order[3].append(f"None -> Entity name: {result['entity_name']}, Top candidate: None")
+            continue
+        match_found = False
+        for location_name, _ in solutions_dict.items():
+            if location_name == top_candidate["name"] or location_name == top_candidate["asciiname"] or location_name in top_candidate["alternatenames"]:
+                match_found = True
+                break
+        if not match_found:
+            print_order[4].append(["None", "None", "None", result['entity_name'], top_candidate['name'], top_candidate['id'], top_candidate['dataset']])
+            # print_order[4].append(f"None -> Entity name: {result['entity_name']}, Top candidate: ({top_candidate['name']}, {top_candidate['id']}, {top_candidate['dataset']})")
+    
+    tabulate_list = []
+    for list in print_order:
+        for entry in list:
+            tabulate_list.append(entry)
+            # print(entry)
+    print(tabulate(tabulate_list, headers=["Location Mention", "Toponym ID", "Toponym Dataset", "Entity Name", 
+                            "Candidate Name", "Candidate ID", "Candidate Dataset"]))
 
 def convert_geonames(
         geonames_entry: Dict[str, Any]
@@ -130,3 +192,14 @@ def convert_stedsnavn(
             "admin1_code": ADMIN1_MAP[stedsnavn_entry["admin_codes"][0][0]], 
             "admin2_code": ADMIN2_MAP[stedsnavn_entry["admin_codes"][0][1]],
             "population": "0"} # Stedsnavn has no population data
+
+def get_top_candidate(
+        location: Dict[str, Any]
+) -> Union[Dict[str, Any], None]:
+    """
+    Return the top candidate of a location.
+    This will always be the first candidate in the candidate list.
+    If the location has no candidates, return None.
+    """
+    if len(location["candidates"]) == 0: return None
+    return location["candidates"][0]

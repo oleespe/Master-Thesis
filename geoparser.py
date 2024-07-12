@@ -768,31 +768,6 @@ def analyze_performance(
     incorrect_best_candidate = [key for key, value in matching_placenames.items() if int(value["best_candidate"]["geonameid"]) != solutions_dict[key]]
     print(f"Correct best candidates: {len(matching_placenames) - len(incorrect_best_candidate)}, missing: {incorrect_best_candidate}")
 
-def print_mappings(
-        locations_data: List[Dict[str, Any]]
-):
-    # TODO: Will not work currently as the "best_candidate" field has been removed
-    return
-    for location in locations_data:
-        if location['best_candidate'] is None:
-            print(f"{location['entity_name']} -> None")
-            continue
-        print(f"{location['entity_name']} -> ({location['best_candidate']['name']}, {location['best_candidate']['geonameid']}, {location['best_candidate']['country_code']}, {location['best_candidate']['coordinates']})")
-
-def print_solutions_mappings(
-        file_path: str,
-        locations_data: List[Dict[str, Any]],
-):
-    # TODO: Needs to be fixed to actually support multiple entries of same entity.
-    return
-    solutions_dict = create_solutions_dict(file_path)
-    matching_placenames = {key: value for key, value in locations_data.items() if key in solutions_dict}
-    for key, value in solutions_dict.items():
-        if key not in locations_data:
-            print(f"({key}, {value}) -> None")
-            continue
-        print(f"({key}, {value}) -> ({matching_placenames[key]['best_candidate']['name']}, {matching_placenames[key]['best_candidate']['geonameid']})")
-
 
 # TODO: Should try and implement an algorithm that tries to find hierarchical pairs.
 # For instance, in the text "Jeg reiste fra Bergen til Oslo", it determines Bergen as Bergen County, USA, and Oslo as Oslo, Norway.
