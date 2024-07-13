@@ -15,13 +15,14 @@ ADMIN2_LIST = read_admin2("data/admin2Codes.txt")[0].to_list()
 def geoparse_pdf(
         file_path: str,
         pdf_parser: Callable[[str, bool], str],
-        is_wikipedia: bool, # Is the pdf a wikipedia article?
+        is_wikipedia: bool,
         mute_output: bool = False,
         pop_weight: float = 1,
         alt_names_weight: float = 1,
         country_weight: float = 1,
         admin1_weight: float = 1,
-        hierarchy_weight: float = 1,
+        ancestor_weight: float = 1,
+        descendant_weight: float = 1,
         co_candidates_weight: float = 1,
         co_text_weight: float = 1,
         adm1_candidates_weight: float = 1,
@@ -52,8 +53,10 @@ def geoparse_pdf(
         How much the inferred countries should affect the overall score.
     admin1_weight : float
         How much the inferred first order administrative divisions should affect the overall score.
-    hierarchy_weight : float
+    ancestor_weight : float
         How much the text mentions of a candidate's geographical ancestors should contribute to the overall score.
+    descendant_weight : float
+        How much the text mentions of a candidate's geographical descendants should contribute to the overall score.
     co_candidates_weight : float
         How much candidate mentions should contribute when inferring countries.
     co_text_weight : float
@@ -76,7 +79,7 @@ def geoparse_pdf(
     if not mute_output: print(f"Started parsing PDF with path: {file_path}")
     text = pdf_parser(file_path, is_wikipedia)
     if not mute_output: print(f"Finished parsing PDF")
-    return geoparse(text, mute_output, pop_weight, alt_names_weight, country_weight, admin1_weight, hierarchy_weight, co_candidates_weight, 
+    return geoparse(text, mute_output, pop_weight, alt_names_weight, country_weight, admin1_weight, ancestor_weight, descendant_weight, co_candidates_weight, 
                     co_text_weight, adm1_candidates_weight, adm1_text_weight, country_cutoff, adm1_cutoff)
 
 def geoparse(
@@ -86,7 +89,8 @@ def geoparse(
         alt_names_weight: float = 1,
         country_weight: float = 1,
         admin1_weight: float = 1,
-        hierarchy_weight: float = 1,
+        ancestor_weight: float = 1,
+        descendant_weight: float = 1,
         co_candidates_weight: float = 1,
         co_text_weight: float = 1,
         adm1_candidates_weight: float = 1,
@@ -111,8 +115,10 @@ def geoparse(
         How much the inferred countries should affect the overall score.
     admin1_weight : float
         How much the inferred first order administrative divisions should affect the overall score.
-    hierarchy_weight : float
+    ancestor_weight : float
         How much the text mentions of a candidate's geographical ancestors should contribute to the overall score.
+    descendant_weight : float
+        How much the text mentions of a candidate's geographical descendants should contribute to the overall score.
     co_candidates_weight : float
         How much candidate mentions should contribute when inferring countries.
     co_text_weight : float
@@ -165,7 +171,7 @@ def geoparse(
     if not mute_output: print("Ranking candidates")
     for location in locations_data:
         __rank(location, locations_data, es, text, inferred_countries, inferred_adm1, mute_output,
-             pop_weight, alt_names_weight, country_weight, admin1_weight, hierarchy_weight)
+             pop_weight, alt_names_weight, country_weight, admin1_weight, ancestor_weight, descendant_weight)
     if not mute_output: print("Finished geoparsing")
     return {
         "inferred_countries": inferred_countries, 
@@ -306,9 +312,9 @@ def __calculate_entity_distance(
 
     distance = 0
     if location_entity1["start_char"] < location_entity2["end_char"]:
-        distance = len(text[location_entity1["end_char"]:location_entity2["start_char"]].split())
+        distance = len(text[location_entity1["end_char"]:location_entity2["start_char"]].split()) + 1
     else:
-        distance = len(text[location_entity2["end_char"]:location_entity1["start_char"]].split())
+        distance = len(text[location_entity2["end_char"]:location_entity1["start_char"]].split()) + 1
     return distance
 
 def __infer_countries(
@@ -642,76 +648,53 @@ def __get_ancestors(
 
     return ancestors
 
-def __rank(
-        location: Dict[str, Any],
+def __find_hierarchical_descendants(
+        candidate: Dict[str, Any],
+        candidate_location: Dict[str, Any],
         locations_data: List[Dict[str, Any]],
-        es: Elasticsearch,
-        text: str,
-        inferred_countries: Dict[str, float],
-        inferred_adm1: Dict[str, Dict[str, float]],
-        mute_output: bool = False,
-        pop_weight: float = 1,
-        alt_names_weight: float = 1,
-        country_weight: float = 1,
-        admin1_weight: float = 1,
-        hierarchy_weight: float = 1
-) -> None:
+) -> List[Dict[str, Any]]:
     """
-    Rank a locations toponym candidates with a value between 0 and 1.
-    This value is the 4th-root of the normalized sum of different scoring methods.
+    Find hierarchical descendants for a candidate.
+    The function will search through all candidates for all location entities, and see if any of them are its potential hierarchical descendants.
 
     Parameters
     ----------
-    location : Dict[str, Any]
-        The location entry for a given location entity. Contains information such as its name in text, as well as its candidates.
+    candidate : Dict[str, Any]
+        Candidate to find descendants for.
+    candidate_location : Dict[str, Any]
+        The location entity that the candidate belongs to.
     locations_data : List[Dict[str, Any]]
-        All location entries generated in the geoparsing process.
-    es : Elasticsearch
-        Elasticsearch instance with the "geonames_custom" index.
-    inferred_countries : Dict[str, float]
-        Countries that have been inferred with infer_countries().
-    inferred_adm1 : Dict[str, Dict[str, float]]
-        First order administrative divisions that have been inferred with infer_adm1().
-    mute_output : bool = False
-        Mute all text status output.
-    pop_weight : float
-        How much a candidate's population size should contribute to the overall score.
-    alt_names_weight : float
-        How much a candidate's number of alternate names should contribute to the overall score.
-    country_weight : float
-        How much the inferred countries should affect the overall score.
-    admin1_weight : float
-        How much the inferred first order administrative divisions should affect the overall score.
-    hierarchy_weight : float
-        How much the text mentions of a candidate's geographical ancestors should contribute to the overall score.
-    """
-
-    if len(location["candidates"]) == 0: return
-    for candidate in location["candidates"]:
-        norm_factor = 1 / (pop_weight + alt_names_weight + country_weight + admin1_weight + hierarchy_weight)
-        candidate["pop_score"] = __pop_score(int(candidate["population"]))
-        candidate["alt_names_score"] = __alt_names_score(len(candidate["alternatenames"]))
-        candidate["country_score"] = __country_score(inferred_countries, candidate["country_code"])
-        candidate["admin1_score"] = __admin1_score(inferred_adm1, candidate["country_code"], candidate["admin1_code"])
-        candidate["hierarchy_score"] = __hierarchy_score(candidate, es, location, locations_data, text, mute_output)
-        candidate["score"] = \
-                (candidate["pop_score"] * pop_weight) + \
-                (candidate["alt_names_score"] * alt_names_weight) + \
-                (candidate["country_score"] * country_weight) + \
-                (candidate["admin1_score"] * admin1_weight) + \
-                (candidate["hierarchy_score"] * hierarchy_weight)
-        candidate["score"] = (candidate["score"] * norm_factor)**(1/4)
+        All location entities in the geoparsing process.
     
-    # TODO: Should try and implement an algorithm that tries to find hierarchical pairs.
-    # For instance, in the text "Jeg reiste fra Bergen til Oslo", it determines Bergen as Bergen County, USA, and Oslo as Oslo, Norway.
-    # In cases like these, it should recognize that these can both potentially belong to Norway, 
-    # and therefore boost their corresponding scores accordingly.
+    Returns
+    -------
+    Dict[str, int]
+        A list of all descendants, as well as their start and end character indexes in the text.
+    """
+    
+    admin_feature_codes = ["ADM1", "ADM2"]
+    if candidate["feature_code"] not in admin_feature_codes: return []
 
-    def sort(candidate):
-        return candidate["score"]
-    location["candidates"] = sorted(location["candidates"], key=sort, reverse=True)
+    # TODO: The way of handling the appended values here is not great.
+    # For candidate: find children amongst the other location entities candidates.
+    hierarchical_descendants = []
+    for location in locations_data:
+        for location_candidate in location["candidates"]:
+            if candidate_location["entity_name"] == location_candidate["name"] or candidate_location["entity_name"] == location_candidate["asciiname"] \
+                or candidate_location["entity_name"] in location_candidate["alternatenames"]: continue
+            if candidate["feature_code"] == "ADM1":
+                if location_candidate["feature_code"] == "ADM1": continue
+                if location_candidate["admin1_code"] == candidate["admin1_code"]:
+                    # Found an admin1 descendant
+                    hierarchical_descendants.append({"candidate": location_candidate, "start_char": location["start_char"], "end_char": location["end_char"]})
+            if candidate["feature_code"] == "ADM2":
+                if location_candidate["feature_code"] == "ADM2": continue
+                if location_candidate["admin1_code"] == candidate["admin1_code"] and location_candidate["admin2_code"] == candidate["admin2_code"]:
+                    # Found an admin2 descendant
+                    hierarchical_descendants.append({"candidate": location_candidate, "start_char": location["start_char"], "end_char": location["end_char"]})
+    return hierarchical_descendants
 
-def __find_hierarchy_distances(
+def __find_ancestor_distances(
         ancestors: Dict[str, Dict[str, Any]],
         location: Dict[str, Any],
         locations_data: List[Dict[str, Any]],
@@ -740,23 +723,100 @@ def __find_hierarchy_distances(
     """
 
     hierarchy_distances = {}
-    for key, value in ancestors.items():
-        if value is None:
+    for key, ancestor in ancestors.items():
+        if ancestor is None:
             continue
         for entry in locations_data:
-            if entry["entity_name"] == value["name"] or entry["entity_name"] == value["asciiname"] or entry["entity_name"] in value["alternatenames"]:
+            if location["entity_name"] == ancestor["name"] or location["entity_name"] == ancestor["asciiname"] or location["entity_name"] in ancestor["alternatenames"]: continue
+            if entry["entity_name"] == ancestor["name"] or entry["entity_name"] == ancestor["asciiname"] or entry["entity_name"] in ancestor["alternatenames"]:
                 distance = __calculate_entity_distance(text, location, entry)
                 if key not in hierarchy_distances: hierarchy_distances[key] = distance
                 elif distance < hierarchy_distances[key]: hierarchy_distances[key] = distance
     
     hierarchy_distances_copy = deepcopy(hierarchy_distances)
-    for key, value in hierarchy_distances.items():
+    for key, ancestor in hierarchy_distances.items(): # TODO: Remove this as it should no longer be necessary
         # If the distance is ever 0, it means that a candidate shares the same name with its hierarchical ancestors.
         # For instance, the entity Trøndelag will return the candidate Trøndelag with feature_code RGN, as being part of the admin1 division Trøndelag.
         # Calculating the distance for these types of entries will always return 0.
         # For now we will simply remove these.
-        if value == 0: del hierarchy_distances_copy[key]
+        if ancestor == 0:
+            print("hei") 
+            del hierarchy_distances_copy[key]
     return hierarchy_distances_copy
+
+def __rank(
+        location: Dict[str, Any],
+        locations_data: List[Dict[str, Any]],
+        es: Elasticsearch,
+        text: str,
+        inferred_countries: Dict[str, float],
+        inferred_adm1: Dict[str, Dict[str, float]],
+        mute_output: bool = False,
+        pop_weight: float = 1,
+        alt_names_weight: float = 1,
+        country_weight: float = 1,
+        admin1_weight: float = 1,
+        ancestor_weight: float = 1,
+        descendant_weight: float = 1
+) -> None:
+    """
+    Rank a locations toponym candidates with a value between 0 and 1.
+    This value is the 4th-root of the normalized sum of different scoring methods.
+
+    Parameters
+    ----------
+    location : Dict[str, Any]
+        The location entry for a given location entity. Contains information such as its name in text, as well as its candidates.
+    locations_data : List[Dict[str, Any]]
+        All location entries generated in the geoparsing process.
+    es : Elasticsearch
+        Elasticsearch instance with the "geonames_custom" index.
+    inferred_countries : Dict[str, float]
+        Countries that have been inferred with infer_countries().
+    inferred_adm1 : Dict[str, Dict[str, float]]
+        First order administrative divisions that have been inferred with infer_adm1().
+    mute_output : bool = False
+        Mute all text status output.
+    pop_weight : float
+        How much a candidate's population size should contribute to the overall score.
+    alt_names_weight : float
+        How much a candidate's number of alternate names should contribute to the overall score.
+    country_weight : float
+        How much the inferred countries should affect the overall score.
+    admin1_weight : float
+        How much the inferred first order administrative divisions should affect the overall score.
+    ancestor_weight : float
+        How much the text mentions of a candidate's geographical ancestors should contribute to the overall score.
+    descendant_weight : float
+        How much the text mentions of a candidate's geographical descendants should contribute to the overall score.
+    """
+
+    if len(location["candidates"]) == 0: return
+    for candidate in location["candidates"]:
+        norm_factor = 1 / (pop_weight + alt_names_weight + country_weight + admin1_weight + ancestor_weight + descendant_weight)
+        candidate["pop_score"] = __pop_score(int(candidate["population"]))
+        candidate["alt_names_score"] = __alt_names_score(len(candidate["alternatenames"]))
+        candidate["country_score"] = __country_score(inferred_countries, candidate["country_code"])
+        candidate["admin1_score"] = __admin1_score(inferred_adm1, candidate["country_code"], candidate["admin1_code"])
+        candidate["ancestor_score"] = __ancestor_score(candidate, es, location, locations_data, text, mute_output)
+        candidate["descendant_score"] = __descendant_score(candidate, location, locations_data, text)
+        candidate["score"] = \
+                (candidate["pop_score"] * pop_weight) + \
+                (candidate["alt_names_score"] * alt_names_weight) + \
+                (candidate["country_score"] * country_weight) + \
+                (candidate["admin1_score"] * admin1_weight) + \
+                (candidate["ancestor_score"] * ancestor_weight) + \
+                (candidate["descendant_score"] * descendant_weight)
+        candidate["score"] = (candidate["score"] * norm_factor)**(1/4)
+    
+    # TODO: Should try and implement an algorithm that tries to find hierarchical pairs.
+    # For instance, in the text "Jeg reiste fra Bergen til Oslo", it determines Bergen as Bergen County, USA, and Oslo as Oslo, Norway.
+    # In cases like these, it should recognize that these can both potentially belong to Norway, 
+    # and therefore boost their corresponding scores accordingly.
+
+    def sort(candidate):
+        return candidate["score"]
+    location["candidates"] = sorted(location["candidates"], key=sort, reverse=True)
 
 def __pop_score(
         candidate_pop: int
@@ -852,7 +912,7 @@ def __admin1_score(
     if admin1_code not in inferred_adm1[country_code]: return 0
     return inferred_adm1[country_code][admin1_code]
 
-def __hierarchy_score(
+def __ancestor_score(
         candidate: Dict[str, Any],
         es: Elasticsearch,
         location: Dict[str, Any],
@@ -886,12 +946,51 @@ def __hierarchy_score(
     """
 
     ancestors = __get_ancestors(candidate, es, mute_output)
-    hierarchy_distances = __find_hierarchy_distances(ancestors, location, locations_data, text)
+    hierarchy_distances = __find_ancestor_distances(ancestors, location, locations_data, text)
     score = 0
     for key, value in hierarchy_distances.items():
         temp_score = 0
-        if key == "admin2": temp_score = (1 / log2(value+1)) * 1
+        if key == "admin2": temp_score = (1 / log2(value+1))
         if key == "admin1": temp_score = (1 / log2(value+1)) * 0.5
         if key == "country": temp_score = (1 / log2(value+1)) * 0.25
+        if temp_score > score: score = temp_score
+    return score
+
+def __descendant_score(
+        candidate: Dict[str, Any],
+        location: Dict[str, Any],
+        locations_data: List[Dict[str, Any]],
+        text: str
+) -> float:
+    """
+    Calculate the score a candidate should receive based on how close its hierarchical descendants are in text.
+    The score is based on the inverse of the log2 distance to the ancestor.
+
+    Parameters
+    ----------
+    candidate : Dict[str, Any]
+        The candidate to score.
+    location : Dict[str, Any]
+        The location entity that the candidate belongs to.
+    locations_data : List[Dict[str, Any]]
+        All location entities in the geoparsing process.
+    text : str
+        The text that is being geoparsed.
+        
+    Returns
+    -------
+    float
+        The score a candidate should receive based on its distance to hierarchical descendants.
+    """
+
+    hierarchical_descendants = __find_hierarchical_descendants(candidate, location, locations_data)
+    score = 0
+    for descendant in hierarchical_descendants:
+        distance = __calculate_entity_distance(text, descendant, location)
+        if distance == 0: continue # This should in theory never happen.
+        if candidate["feature_code"] == "ADM1" and descendant["candidate"]["feature_code"] != "ADM2":
+            temp_score = (1 / log2(distance+1)) * 0.25
+        else:
+            temp_score = (1 / log2(distance+1))
         if temp_score > score: score = temp_score
     return score

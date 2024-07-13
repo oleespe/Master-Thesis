@@ -179,7 +179,8 @@ def print_results(
     candidate_fields: List[str]
         Fields to print for each candidate of a location entity.
         Valid fields: ["dataset", "id", "name", "asciiname", "alternatenames", "coordinates", "feature_code", 
-        "country_code", "admin1_code", "admin2_code", "population", "pop_score", "alt_names_score", "country_score", "admin1_score", "hierarchy_score", "score"]
+                        "country_code", "admin1_code", "admin2_code", "population", "pop_score", "alt_names_score", 
+                        "country_score", "admin1_score", "ancestor_score", "descendant_score", "score"]
     n_candidates: int
         The number of candidates that should be shown for each location. The candidates are sorted in descending order based on their score.
         Setting this to 1 will print only the top candidate.
@@ -227,7 +228,7 @@ def print_all_mappings(
                     match_found = True
                     break
                 continue
-            if location_name == top_candidate["name"] or location_name == top_candidate["asciiname"] or location_name in top_candidate["alternatenames"]:
+            if location_name == result["entity_name"] and (location_name == top_candidate["name"] or location_name == top_candidate["asciiname"] or location_name in top_candidate["alternatenames"]):
                 print_order[1].append([location_name, value['id'], value['dataset'], result['entity_name'], top_candidate['name'], top_candidate['id'], top_candidate['dataset']])
                 match_found = True
                 break
