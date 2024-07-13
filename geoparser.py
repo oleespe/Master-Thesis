@@ -164,7 +164,7 @@ def geoparse(
     
     if not mute_output: print("Ranking candidates")
     for location in locations_data:
-        __score(location, locations_data, es, text, inferred_countries, inferred_adm1, mute_output,
+        __rank(location, locations_data, es, text, inferred_countries, inferred_adm1, mute_output,
              pop_weight, alt_names_weight, country_weight, admin1_weight, hierarchy_weight)
     if not mute_output: print("Finished geoparsing")
     return {
@@ -642,7 +642,7 @@ def __get_ancestors(
 
     return ancestors
 
-def __score(
+def __rank(
         location: Dict[str, Any],
         locations_data: List[Dict[str, Any]],
         es: Elasticsearch,
@@ -657,8 +657,8 @@ def __score(
         hierarchy_weight: float = 1
 ) -> None:
     """
-    Score a candidate with a value between 0 and 1.
-    This score is the 4th-root of the normalized sum of different scoring methods.
+    Rank a locations toponym candidates with a value between 0 and 1.
+    This value is the 4th-root of the normalized sum of different scoring methods.
 
     Parameters
     ----------

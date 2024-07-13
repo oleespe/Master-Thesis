@@ -7,7 +7,7 @@ from utility import deskew
 
 def pypdf2_parse(
         file_path: str,
-        is_wikipedia: bool # Is the pdf a wikipedia article? 
+        is_wikipedia: bool
 ) -> str:
     """
     Parse a pdf file using the PyPDF2 library.
@@ -39,7 +39,7 @@ def pypdf2_parse(
 
 def ocr_parse(
         file_path: str,
-        is_wikipedia: bool # Is the pdf a wikipedia article? 
+        is_wikipedia: bool
 ) -> str:
     """
     Parse a pdf file using the pytesseract library.
