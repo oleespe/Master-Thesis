@@ -14,9 +14,9 @@ ADMIN2_LIST = read_admin2("data/admin2Codes.txt")[0].to_list()
 
 def geoparse_pdf(
         file_path: str,
-        pdf_parser: Callable[[str, bool], str], # pypdf2 or ocr
+        pdf_parser: Callable[[str, bool], str],
         is_wikipedia: bool, # Is the pdf a wikipedia article?
-        verbose: bool = True,
+        mute_output: bool = False,
         pop_weight: float = 1,
         alt_names_weight: float = 1,
         country_weight: float = 1,
@@ -29,15 +29,59 @@ def geoparse_pdf(
         country_cutoff: int = 3,
         adm1_cutoff: int = 3
 ) -> Dict[str, Any]:
-    if verbose: print(f"Started parsing PDF with path: {file_path}")
+    """
+    Geoparse a pdf file. This function is essentially a wrapper for geoparse(), but takes a pdf parser as input.
+
+    Parameters
+    ----------
+    file_path : str
+        File path to pdf file.
+    pdf_parser : Callable[[str, bool], str]
+        A pdf parser, that takes a file path as input, and outputs a raw string of text.
+        There are two available pdf parsers implemented in this solution: ocr_parse() and pypdf2_parse().
+    is_wikipedia : bool
+        If the pdf file is from a wikipedia article.
+        Makes the pdf parsers perform extra actions to remove clutter from the articles that might otherwise reduce geoparsing performance.
+    mute_output : bool
+        Mute all text status output of the geoparser.
+    pop_weight : float
+        How much a candidate's population size should contribute to the overall score.
+    alt_names_weight : float
+        How much a candidate's number of alternate names should contribute to the overall score.
+    country_weight : float
+        How much the inferred countries should affect the overall score.
+    admin1_weight : float
+        How much the inferred first order administrative divisions should affect the overall score.
+    hierarchy_weight : float
+        How much the text mentions of a candidate's geographical ancestors should contribute to the overall score.
+    co_candidates_weight : float
+        How much candidate mentions should contribute when inferring countries.
+    co_text_weight : float
+        How much text mentions should contribute when inferring countries.
+    adm1_candidates_weight : float
+        How much candidate mentions should contribute when inferring first order administrative divisions.
+    adm1_text_weight : float
+        How much text mentions should contribute when inferring first order administrative divisions.
+    country_cutoff : int
+        The number of countries inferred.
+    adm1_cutoff : int
+        The number of first order administrative divisions inferred.
+    
+    Returns
+    -------
+    Dict[str, Any]
+        A dictionary containing the inferred countries and first order administrative divisions, as well as the actual geoparsing results.
+    """
+
+    if not mute_output: print(f"Started parsing PDF with path: {file_path}")
     text = pdf_parser(file_path, is_wikipedia)
-    if verbose: print(f"Finished parsing PDF")
-    return geoparse(text, verbose, pop_weight, alt_names_weight, country_weight, admin1_weight, hierarchy_weight, co_candidates_weight, 
+    if not mute_output: print(f"Finished parsing PDF")
+    return geoparse(text, mute_output, pop_weight, alt_names_weight, country_weight, admin1_weight, hierarchy_weight, co_candidates_weight, 
                     co_text_weight, adm1_candidates_weight, adm1_text_weight, country_cutoff, adm1_cutoff)
 
 def geoparse(
         text: str,
-        verbose: bool = True,
+        mute_output: bool = False,
         pop_weight: float = 1,
         alt_names_weight: float = 1,
         country_weight: float = 1,
@@ -50,7 +94,45 @@ def geoparse(
         country_cutoff: int = 3,
         adm1_cutoff: int = 3
 ) -> List[Dict[str, Any]]:
-    if verbose: print("Started geoparsing process")
+    """
+    The main geoparsing function. It will go through the provided text, and return all toponyms it identifies in the text.
+
+    Parameters
+    ----------
+    text : str
+        The text that should be geoparsed.
+    mute_output : bool
+        Mute all text status output of the geoparser.
+    pop_weight : float
+        How much a candidate's population size should contribute to the overall score.
+    alt_names_weight : float
+        How much a candidate's number of alternate names should contribute to the overall score.
+    country_weight : float
+        How much the inferred countries should affect the overall score.
+    admin1_weight : float
+        How much the inferred first order administrative divisions should affect the overall score.
+    hierarchy_weight : float
+        How much the text mentions of a candidate's geographical ancestors should contribute to the overall score.
+    co_candidates_weight : float
+        How much candidate mentions should contribute when inferring countries.
+    co_text_weight : float
+        How much text mentions should contribute when inferring countries.
+    adm1_candidates_weight : float
+        How much candidate mentions should contribute when inferring first order administrative divisions.
+    adm1_text_weight : float
+        How much text mentions should contribute when inferring first order administrative divisions.
+    country_cutoff : int
+        The number of countries inferred.
+    adm1_cutoff : int
+        The number of first order administrative divisions inferred.
+    
+    Returns
+    -------
+    Dict[str, Any]
+        A dictionary containing the inferred countries and first order administrative divisions, as well as the actual geoparsing results.
+    """
+    
+    if not mute_output: print("Started geoparsing")
     locations_data = []
     nlp = spacy.load("nb_core_news_lg")
     doc = nlp(text)
@@ -73,32 +155,44 @@ def geoparse(
     es = Elasticsearch("http://localhost:9200")
     entity_names = [location["entity_name"] for location in locations_data]
 
-    if verbose: print("Finding candidates")
+    if not mute_output: print("Finding candidates")
     for location in locations_data:
-        location["candidates"] = find_candidates(es, location["entity_name"])
+        location["candidates"] = __find_candidates(es, location["entity_name"], mute_output)
     
-    inferred_countries = infer_countries(locations_data, co_candidates_weight, co_text_weight, country_cutoff)
-    inferred_adm1 = infer_adm1(locations_data, es, adm1_candidates_weight, adm1_text_weight, adm1_cutoff)
+    inferred_countries = __infer_countries(locations_data, mute_output, co_candidates_weight, co_text_weight, country_cutoff)
+    inferred_adm1 = __infer_adm1(locations_data, es, mute_output, adm1_candidates_weight, adm1_text_weight, adm1_cutoff)
     
-    if verbose: print("Ranking candidates")
+    if not mute_output: print("Ranking candidates")
     for location in locations_data:
-        rank(location, locations_data, es, text, inferred_countries, inferred_adm1, 
+        __score(location, locations_data, es, text, inferred_countries, inferred_adm1, mute_output,
              pop_weight, alt_names_weight, country_weight, admin1_weight, hierarchy_weight)
-    if verbose: print("Finished geoparsing process")
+    if not mute_output: print("Finished geoparsing")
     return {
         "inferred_countries": inferred_countries, 
         "inferred_admin1": inferred_adm1, 
-        "results": handle_duplicates(entity_names, locations_data)
+        "results": __handle_duplicates(entity_names, locations_data)
     }
 
-def handle_duplicates(
+def __handle_duplicates(
         entity_names: List[str],
-        locations_data: List[Dict[str, Any]]
+        locations_data: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    # For duplicate entries the common heuristic is to treat them all as referring to the same toponym.
-    # It is however quite useful to run the ranking process on all of them, as we want to use their location in text etc.
-    # When presenting our results however, we want to return only one result per toponym.
-    # To solve this, this function looks for duplicates and selects the entry that has the highest scoring top candidate, and deletes the other ones.
+    """
+    Handle duplicate entries from the geoparser. The common heuristic is to treat all same named location mentions as referring to the same toponym.
+    This function looks for duplicates and selects the entry that has the highest scoring top candidate, and deletes the other ones.
+
+    Parameters
+    ----------
+    entity_names : List[str]
+        All location entities found in the text during the toponym recognition step.
+    locations_data : List[Dict[str, Any]]
+        The results from geoparsing.
+    
+    Returns
+    -------
+    List[Dict[str, Any]]
+        The same results as in the input, except with all duplicates resolved.
+    """
     
     counts = Counter(entity_names)
     locations_data_copy = deepcopy(locations_data)
@@ -123,10 +217,31 @@ def handle_duplicates(
         results.append(locations_data_copy[best_index])
     return results
 
-def find_candidates(
+def __find_candidates(
         es: Elasticsearch,
         place_name: str,
+        mute_output: bool = False
 ) -> List[Dict[str, Any]]:
+    """
+    Finds toponym candidates from either GeoNames or Stedsnavn for a given location mention.
+    Will prioritize GeoNames, and only uses Stedsnavn if no results are returned from the former.
+    Discards any results where the query string does not match a toponym's name, ascii name, or one of its alternate names.
+
+    Parameters
+    ----------
+    es : Elasticsearch
+        Elasticsearch instance. Must have the indexes "geonames_custom" and "stedsnavn" to retrieve candidates from the respective datasets.
+    place_name : str
+        The place name string that the datasets should be queried on.
+    mute_output : bool
+        Mute all text status output.
+    
+    Returns
+    -------
+    List[Dict[str, Any]]
+        A list of candidates for the given place name.
+    """
+
     s = Search(using=es, index="geonames_custom")
 
     # (type: phrase) ensures that the entire place name is present. Without it, a query for a place name like "Rio de Janeiro" would also return any place with "Rio" in it.
@@ -142,7 +257,7 @@ def find_candidates(
         q_results = s.filter("term", feature_code="PCLI").query(q).execute() # Should in theory only ever return one value anyways.
         # TODO: Proper error handling
         if len(q_results) != 1:
-            print(f"Warning: Got an unexpected number of results from country query: {len(q_results)}.")
+            if not mute_output: print(f"Warning: Got an unexpected number of results from country query: {len(q_results)}.")
         return [convert_geonames(q_results[0].to_dict())]
 
     q_results = s.query(q)[0:1000].execute()
@@ -166,12 +281,28 @@ def find_candidates(
     results = [convert_stedsnavn(result.to_dict()) for result in q_results if result["name"] == place_name or place_name in result["alternatenames"]]
     return results
 
-def calculate_entity_distance(
+def __calculate_entity_distance(
         text: str,
         location_entity1: Dict[str, Any],
         location_entity2: Dict[str, Any]
 ) -> int:
-    # Calculates the distance between two entities in a text
+    """
+    Calculate the distance in text between two location entities that are found through NER.
+
+    Parameters
+    ----------
+    text : str
+        The text where the entities are located.
+    location_entity1 : Dict[str, Any]
+        The first entity.
+    location_entity2 : Dict[str, Any]
+        The second entity.
+    
+    Returns
+    -------
+    int
+        The distance between the two entities.
+    """
 
     distance = 0
     if location_entity1["start_char"] < location_entity2["end_char"]:
@@ -180,12 +311,36 @@ def calculate_entity_distance(
         distance = len(text[location_entity2["end_char"]:location_entity1["start_char"]].split())
     return distance
 
-def infer_countries(
+def __infer_countries(
         locations_data: List[Dict[str, Any]],
+        mute_output: bool = False,
         candidates_weight: float = 1,
         text_weight: float = 1,
         cutoff: int = 3
 ) -> Dict[str, float]:
+    """
+    Infers countries of relevance. It uses the location entities that are found in the toponym recognition step, as well as the candidates retrieved for them.
+    The function counts the number of text mentions for different countries, as well as how representative they are amongst the various candidates.
+
+    Parameters
+    ----------
+    locations_data : List[Dict[str, Any]]
+        Data on every location entity, including its name, as well as the candidates that have been found for it.
+    mute_output : bool
+        Mute all text status output.
+    candidates_weight : float
+        How much should a country's representation amongst candidates count towards the overall score.
+    text_weight : float
+        How much should a country's text mentions count towards the overall score.
+    cutoff : int
+        The number of inferred countries that should be returned.
+
+    Returns
+    -------
+    Dict[str, float]
+        Dictionary with country codes as keys, and their calculated relevance as value.
+    """
+
     if candidates_weight == 0 and text_weight == 0:
         raise ValueError("both candidates_weight and text_weight are set to 0")
 
@@ -223,7 +378,7 @@ def infer_countries(
             weighted_mentions[key] = (candidates_weight * norm_weights_factor * (candidates_mentions[key] / total_mentions_candidates)) + (text_weight * norm_weights_factor * (text_mentions[key] / total_mentions_text))
 
     if not isclose(sum(weighted_mentions.values()), 1):
-        print("Warning: Got country weighted mentions not properly normalized: ", sum(weighted_mentions.values()))
+        if not mute_output: print("Warning: Got country weighted mentions not properly normalized: ", sum(weighted_mentions.values()))
     
     # Select top n countries.
     top_n_list = sorted(zip(weighted_mentions.values(), weighted_mentions.keys()), reverse=True)[:cutoff]
@@ -232,18 +387,43 @@ def infer_countries(
     top_n_refactored = {code: value * factor for code, value in top_n.items()}
     total_sum_cutoff = sum(top_n_refactored.values())
     if not isclose(total_sum_cutoff, 1):
-        print("Warning: Got country weighted mentions cutoff not properly normalized: ", top_n_refactored)
+        if not mute_output: print("Warning: Got country weighted mentions cutoff not properly normalized: ", top_n_refactored)
     
     return top_n_refactored
 
-def infer_adm1(
+def __infer_adm1(
         locations_data: List[Dict[str, Any]],
         es: Elasticsearch,
+        mute_output: bool = False,
         candidates_weight: float = 1,
         text_weight: float = 1,
         cutoff: int = 3
 ):
-    # TODO: Proper error handling
+    """
+    Infers first order administrative divisions of relevance. It uses the location entities that are found in the toponym recognition step, as well as the candidates retrieved for them.
+    The function counts the number of text mentions for different first order administrative divisions, as well as how representative they are amongst the various candidates.
+
+    Parameters
+    ----------
+    locations_data : List[Dict[str, Any]]
+        Data on every location entity, including its name, as well as the candidates that have been found for it.
+    es : Elasticsearch
+        Elasticsearch instance that must have the "geonames_custom" index.
+    mute_output : bool
+        Mute all text status output.
+    candidates_weight : float
+        How much should a country's representation amongst candidates count towards the overall score.
+    text_weight : float
+        How much should a country's text mentions count towards the overall score.
+    cutoff : int
+        The number of inferred countries that should be returned.
+
+    Returns
+    -------
+    Dict[str, Dict[str, float]]
+        Dictionary with country codes as keys, that point to another dictionary with admin1 codes as key, and their calculated relevance as value.
+    """
+
     if candidates_weight == 0 and text_weight == 0:
         raise ValueError("both candidates_weight and text_weight are set to 0")
     
@@ -268,8 +448,6 @@ def infer_adm1(
             else: candidate_mentions[candidate["country_code"]][candidate["admin1_code"]] += 1
     
     # For all adm1 mentions retrieved in the previous process, find their entry in Elasticsearch.
-    # This should in theory also always include any of the potential adm1 entities found in the text,
-    # as it should then be one of the results counted from the previous process.
     adm1_mentions = []
     for country_code, value in candidate_mentions.items():
         for adm1_code, _ in value.items():
@@ -287,10 +465,10 @@ def infer_adm1(
             q_results = s.query(q).execute()
 
             if len(q_results) > 1:
-                print(f"Warning: Found more than one result for adm1 query. adm1: {adm1_code}, country: {country_code}")
+                if not mute_output: print(f"Info: Found more than one result for adm1 query. adm1: {adm1_code}, country: {country_code}")
                 continue
             if len(q_results) == 0:
-                print(f"Warning: Found no results for adm1 query. adm1: {adm1_code}, country: {country_code}")
+                if not mute_output: print(f"Info: Found no results for adm1 query. adm1: {adm1_code}, country: {country_code}")
                 continue
             # Should only ever be one result in q_results here anyways, so it is fine to use indexing.
             adm1_mentions.append(q_results[0].to_dict())
@@ -334,7 +512,7 @@ def infer_adm1(
     for _, value in weighted_mentions.items():
         total_sum += sum(value.values())
     if not isclose(total_sum, 1):
-        print("Warning: Got admin1 weighted mentions not properly normalized: ", total_sum)
+        if not mute_output: print("Warning: Got admin1 weighted mentions not properly normalized: ", total_sum)
 
     # Create simplified representation of dictionary. Instead of {country_code: {admin_code: value}} we have {country_code.admin_code: value}.
     simplified_weighted_mentions = {}
@@ -365,14 +543,34 @@ def infer_adm1(
     for _, value in top_n_refactored.items():
         total_sum_cutoff += sum(value.values())
     if not isclose(total_sum_cutoff, 1):
-        print("Warning: Got admin1 weighted mentions cutoff not properly normalized: ", top_n_refactored)
+        if not mute_output: print("Warning: Got admin1 weighted mentions cutoff not properly normalized: ", top_n_refactored)
     
     return top_n_refactored
 
-def get_ancestors(
+def __get_ancestors(
         candidate: Dict[str, Any],
         es: Elasticsearch,
+        mute_output: bool = False
 ) -> Dict[str, Dict[str, Any]]:
+    """
+    Retrieve the ancestors for a candidate. Ancestors in this context, refer to the administrative divisions a toponym belongs to.
+    I.e., A first order administrative division belongs to a country, etc. 
+
+    Parameters
+    ----------
+    candidate : Dict[str, Any]
+        Candidate to find ancestors for.
+    es : Elasticsearch
+        Elasticsearch instance to search for ancestors. Must have the "geonames_custom" index.
+    mute_output : bool
+        Mute all text status output.
+
+    Returns
+    -------
+    Dict[str, Dict[str, Any]]
+        Dictionary with three entries, one for each of the country, first order, and second order administrative division entries.
+    """
+
     ancestors = {"country": None, "admin1": None, "admin2": None}
 
     feature_code = candidate['feature_code']
@@ -395,9 +593,9 @@ def get_ancestors(
         q_results = s.query(q).execute()
 
         if len(q_results) > 1:
-            print(f"Warning: Found more than one result for country query. country: {country_code}")
+            if not mute_output: print(f"Warning: Found more than one result for country query. country: {country_code}")
         elif len(q_results) == 0:
-            print(f"Warning: Found no results for country query. country: {country_code}")
+            if not mute_output: print(f"Info: Found no results for country query. country: {country_code}")
         else:
             ancestors["country"] = q_results[0].to_dict()
 
@@ -415,9 +613,9 @@ def get_ancestors(
         q_results = s.query(q).execute()
 
         if len(q_results) > 1:
-            print(f"Warning: Found more than one result for adm1 query. adm1: {admin1_code}, country: {country_code}")
+            if not mute_output: print(f"Warning: Found more than one result for adm1 query. adm1: {admin1_code}, country: {country_code}")
         elif len(q_results) == 0:
-            print(f"Warning: Found no results for adm1 query. adm1: {admin1_code}, country: {country_code}")
+            if not mute_output: print(f"Info: Found no results for adm1 query. adm1: {admin1_code}, country: {country_code}")
         else:
             ancestors["admin1"] = q_results[0].to_dict()
 
@@ -436,35 +634,66 @@ def get_ancestors(
         q_results = s.query(q).execute()
 
         if len(q_results) > 1:
-            print(f"Warning: Found more than one result for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
+            if not mute_output: print(f"Warning: Found more than one result for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
         elif len(q_results) == 0:
-            print(f"Warning: Found no results for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
+            if not mute_output: print(f"Info: Found no results for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
         else:
             ancestors["admin2"] = q_results[0].to_dict()
 
     return ancestors
 
-def rank(
+def __score(
         location: Dict[str, Any],
         locations_data: List[Dict[str, Any]],
         es: Elasticsearch,
         text: str,
         inferred_countries: Dict[str, float],
         inferred_adm1: Dict[str, Dict[str, float]],
-        pop_weight: float,
-        alt_names_weight: float,
+        mute_output: bool = False,
+        pop_weight: float = 1,
+        alt_names_weight: float = 1,
         country_weight: float = 1,
         admin1_weight: float = 1,
         hierarchy_weight: float = 1
-):
+) -> None:
+    """
+    Score a candidate with a value between 0 and 1.
+    This score is the 4th-root of the normalized sum of different scoring methods.
+
+    Parameters
+    ----------
+    location : Dict[str, Any]
+        The location entry for a given location entity. Contains information such as its name in text, as well as its candidates.
+    locations_data : List[Dict[str, Any]]
+        All location entries generated in the geoparsing process.
+    es : Elasticsearch
+        Elasticsearch instance with the "geonames_custom" index.
+    inferred_countries : Dict[str, float]
+        Countries that have been inferred with infer_countries().
+    inferred_adm1 : Dict[str, Dict[str, float]]
+        First order administrative divisions that have been inferred with infer_adm1().
+    mute_output : bool = False
+        Mute all text status output.
+    pop_weight : float
+        How much a candidate's population size should contribute to the overall score.
+    alt_names_weight : float
+        How much a candidate's number of alternate names should contribute to the overall score.
+    country_weight : float
+        How much the inferred countries should affect the overall score.
+    admin1_weight : float
+        How much the inferred first order administrative divisions should affect the overall score.
+    hierarchy_weight : float
+        How much the text mentions of a candidate's geographical ancestors should contribute to the overall score.
+    """
+
     if len(location["candidates"]) == 0: return
     for candidate in location["candidates"]:
         norm_factor = 1 / (pop_weight + alt_names_weight + country_weight + admin1_weight + hierarchy_weight)
-        candidate["pop_score"] = pop_score(int(candidate["population"]))
-        candidate["alt_names_score"] = alt_names_score(len(candidate["alternatenames"]))
-        candidate["country_score"] = country_score(inferred_countries, candidate["country_code"])
-        candidate["admin1_score"] = admin1_score(inferred_adm1, candidate["country_code"], candidate["admin1_code"])
-        candidate["hierarchy_score"] = hierarchy_score(candidate, es, location, locations_data, text)
+        candidate["pop_score"] = __pop_score(int(candidate["population"]))
+        candidate["alt_names_score"] = __alt_names_score(len(candidate["alternatenames"]))
+        candidate["country_score"] = __country_score(inferred_countries, candidate["country_code"])
+        candidate["admin1_score"] = __admin1_score(inferred_adm1, candidate["country_code"], candidate["admin1_code"])
+        candidate["hierarchy_score"] = __hierarchy_score(candidate, es, location, locations_data, text, mute_output)
         candidate["score"] = \
                 (candidate["pop_score"] * pop_weight) + \
                 (candidate["alt_names_score"] * alt_names_weight) + \
@@ -482,19 +711,41 @@ def rank(
         return candidate["score"]
     location["candidates"] = sorted(location["candidates"], key=sort, reverse=True)
 
-def find_hierarchy_distances(
+def __find_hierarchy_distances(
         ancestors: Dict[str, Dict[str, Any]],
         location: Dict[str, Any],
         locations_data: List[Dict[str, Any]],
         text: str
-):
+) -> Dict[str, int]:
+    """
+    Find the distance in text between a location entity and one of its candidate's ancestors.
+    A candidate's ancestors, are toponyms that are higher in its hierarchical tree.
+    Will only calculate these distances if they actually exist in the text.
+
+    Parameters
+    ----------
+    ancestors : Dict[str, Dict[str, Any]]
+        A candidate's hierarchical ancestors.
+    location : Dict[str, Any]
+        The location entity that a distance should be calculated for.
+    locations_data : List[Dict[str, Any]]
+        All location entities in the geoparsing process.
+    text : str
+        The text that the distance should be calculated in.
+    
+    Returns
+    -------
+    Dict[str, int]
+        Dictionary with hierarchical levels as keys (country, admin1, admin2) and their shortest calculated distance as values.
+    """
+
     hierarchy_distances = {}
     for key, value in ancestors.items():
         if value is None:
             continue
         for entry in locations_data:
             if entry["entity_name"] == value["name"] or entry["entity_name"] == value["asciiname"] or entry["entity_name"] in value["alternatenames"]:
-                distance = calculate_entity_distance(text, location, entry)
+                distance = __calculate_entity_distance(text, location, entry)
                 if key not in hierarchy_distances: hierarchy_distances[key] = distance
                 elif distance < hierarchy_distances[key]: hierarchy_distances[key] = distance
     
@@ -507,44 +758,135 @@ def find_hierarchy_distances(
         if value == 0: del hierarchy_distances_copy[key]
     return hierarchy_distances_copy
 
-def pop_score(
+def __pop_score(
         candidate_pop: int
 ) -> float:
+    """
+    Calculate the population score for a candidate.
+    Uses a logistic function to produce an output.
+    The population size is scaled to better fit with the logistic function.
+
+    Parameters
+    ----------
+    candidate_pop : int
+        The population size of a candidate.
+    
+    Returns
+    -------
+    float
+        The score given a population size.
+    """
+
     if candidate_pop == 0: return 0
     scaled_pop = candidate_pop / 10000
     return logistic_function(log2(scaled_pop), 3)
 
-def alt_names_score(
+def __alt_names_score(
         num_alt_names: int
 ) -> float:
+    """
+    Calculate the alternate names score for a candidate.
+    Uses a logistic function to produce an output.
+
+    Parameters
+    ----------
+    num_alt_names : int
+        The number of alternate names for a candidate.
+    
+    Returns
+    -------
+    float
+        The score given the number of alternate names.
+    """
+
     if num_alt_names == 0: return 0
     return logistic_function(log2(num_alt_names), 3)
 
-def country_score(
+def __country_score(
         inferred_countries: Dict[str, float],
         country_code: str
 ) -> float:
+    """
+    The score a candidate receives depending on whether it belongs to any of the inferred countries.
+
+    Parameters
+    ----------
+    inferred_countries : Dict[str, float]
+        Inferred countries determined by the infer_countries() function.
+    country_code : str
+        Country code of a given candidate.
+    
+    Returns
+    -------
+    float
+        The inferred relevance of a country, or 0 if it is not present.
+    """
+
     if country_code not in inferred_countries: return 0
     return inferred_countries[country_code]
 
-def admin1_score(
+def __admin1_score(
         inferred_adm1: Dict[str, Dict[str, float]],
         country_code: str,
         admin1_code: str
 ) -> float:
+    """
+    The score a candidate receives depending on whether it belongs to any of the inferred first order administrative divisions.
+
+    Parameters
+    ----------
+    inferred_adm1 : Dict[str, float]
+        Inferred first order administrative divisions determined by the infer_adm1() function.
+    country_code : str
+        Country code of a given candidate.
+    admin1_code : str
+        Admin1 code of a given candidate.
+        
+    Returns
+    -------
+    float
+        The inferred relevance of a first order administrative division, or 0 if it is not present.
+    """
+
     if country_code not in inferred_adm1: return 0
     if admin1_code not in inferred_adm1[country_code]: return 0
     return inferred_adm1[country_code][admin1_code]
 
-def hierarchy_score(
+def __hierarchy_score(
         candidate: Dict[str, Any],
         es: Elasticsearch,
         location: Dict[str, Any],
         locations_data: List[Dict[str, Any]],
         text: str,
+        mute_output: bool = False
 ) -> float:
-    ancestors = get_ancestors(candidate, es)
-    hierarchy_distances = find_hierarchy_distances(ancestors, location, locations_data, text)
+    """
+    Calculate the score a candidate should receive based on how close its hierarchical ancestors are in text.
+    The score is based on the inverse of the log2 distance to the ancestor.
+
+    Parameters
+    ----------
+    candidate : Dict[str, Any]
+        The candidate to score.
+    es : Elasticsearch
+        Elasticsearch instance. Must have the "geonames_custom" index.
+    location : Dict[str, Any]
+        The location entity that the candidate belongs to.
+    locations_data : List[Dict[str, Any]]
+        All location entities in the geoparsing process.
+    text : str
+        The text that is being geoparsed.
+    mute_output : bool
+        Mute all text status output.
+        
+    Returns
+    -------
+    float
+        The score a candidate should receive based on its distance to hierarchical ancestors.
+    """
+
+    ancestors = __get_ancestors(candidate, es, mute_output)
+    hierarchy_distances = __find_hierarchy_distances(ancestors, location, locations_data, text)
     score = 0
     for key, value in hierarchy_distances.items():
         temp_score = 0

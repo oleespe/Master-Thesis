@@ -9,24 +9,49 @@ from tabulate import tabulate
 
 def create_solutions_dict(
         file_path: str
-) -> Dict[str, int]:
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Creates a dictionary based on the contents of a solutions file.
+    The solution file should be the result of manual geoparsing.
+
+    Parameters
+    ----------
+    file_path : str
+        The file path to the solutions file.
+        
+    Returns
+    -------
+    Dict[str, Dict[str, Any]]
+        A dictionary with a location entity name as key, and dictionary containing further information on that entity, as value. 
+    """
+
     solutions = pd.read_csv(file_path)
     solutions_dict = {}
-    for i, row in solutions.iterrows():
-        # Drop rows that don't have a geonames id.
-        # This happens when there is a place name in the relevant pdf that has been manually found,
-        # but with no record in the geonames database.
-        # This can happen if the location is very obscure or if it is a historic location etc.
-        # For all purposes, we do not consider these when determining accuracy.
+    for _, row in solutions.iterrows():
         if row["id"] == 0:
-            # solutions.drop(i, inplace=True)
             continue
         solutions_dict[row["name"]] = {"id": row["id"], "dataset": row["dataset"]}
     return solutions_dict
 
 # Deskew image for ocr parse.
-def deskew(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+def deskew(
+        pdf : np.NDArray[Any]
+) -> cv2.MatLike:
+    """
+    Deskew a pdf, so that it can be used with pytesseract
+
+    Parameters
+    ----------
+    pdf : np.NDArray[Any]
+        pdf as a numpy array.
+        
+    Returns
+    -------
+    Dict[str, Dict[str, Any]]
+        A deskewed representation of the pdf.  
+    """
+
+    gray = cv2.cvtColor(pdf, cv2.COLOR_BGR2GRAY)
     gray = cv2.bitwise_not(gray)
     coords = np.column_stack(np.where(gray > 0))
     angle = cv2.minAreaRect(coords)[-1]
@@ -36,31 +61,72 @@ def deskew(image):
     else:
         angle = -angle
 
-    (h, w) = image.shape[:2]
+    (h, w) = pdf.shape[:2]
     center = (w // 2, h // 2)
     M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    rotated = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    rotated = cv2.warpAffine(pdf, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
     return rotated
 
 def read_admin1(
         file_path: str
 ) -> pd.DataFrame:
+    """
+    Read a GeoNames admin1 file.
+    The admin1 file contains information on all countries first order administrative divisions.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the admin1 file.
+        
+    Returns
+    -------
+    pd.DataFrame
+        Pandas dataframe representation of the file.
+    """
+
     admin1 = pd.read_csv(file_path, sep="\t", header=None)
     return admin1
 
 def read_admin2(
         file_path: str
 ) -> pd.DataFrame:
+    """
+    Read a GeoNames admin2 file.
+    The admin2 file contains information on all countries second order administrative divisions.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the admin2 file.
+        
+    Returns
+    -------
+    pd.DataFrame
+        Pandas dataframe representation of the file.
+    """
+
     admin2 = pd.read_csv(file_path, sep="\t", header=None)
     return admin2
 
 def write_csv_results(
         file_path: str,
-        locations_data: List[Dict[str, Any]]
-):
+        results: List[Dict[str, Any]]
+) -> None:
+    """
+    Write the results of the geoparser.
+
+    Parameters
+    ----------
+    file_path : str
+        File path where the results should be stored. File needs to be a .csv file.
+    results : List[Dict[str, Any]]
+        Results from the geoparser.
+    """
+
     with open(file_path, "w") as file:
         file.write("name,id,coordinates,database\n")
-        for location in locations_data:
+        for location in results:
             top_candidate = get_top_candidate(location)
             if top_candidate is None:
                 continue
@@ -72,15 +138,54 @@ def logistic_function(
         l: float = 1,
         k: float = 1
 ) -> float:
+    """
+    Calculate the value of a logistic function with the given input parameters.
+
+    Parameters
+    ----------
+    x : float
+        The value to calculate for.
+    x0 : float
+        x0 is the x value of the function's midpoint.
+    l : float
+        The carrying capacity of the values of the function.
+    k : float
+        The growth rate of the function.
+        
+    Returns
+    -------
+    float
+        The calculated value.
+    """
+
     return l / (1 + exp(-k*(x-x0)))
 
 def print_results(
-        locations_data: List[Dict[str, Any]],
+        results: List[Dict[str, Any]],
         fields: List[str] = ["entity_name"],
         candidate_fields: List[str] = ["name", "dataset", "id", "country_code", "coordinates", "score"],
         n_candidates: int = 2
-):
-    for location in locations_data:
+) -> None:
+    """
+    Print the results of the geoparser. 
+
+    Parameters
+    ----------
+    results: List[Dict[str, Any]]
+        Results of the geoparser.
+    fields: List[str]
+        Fields to print for a location entity.
+        Valid fields: ["entity_name", "label", "start_char", "end_char"]
+    candidate_fields: List[str]
+        Fields to print for each candidate of a location entity.
+        Valid fields: ["dataset", "id", "name", "asciiname", "alternatenames", "coordinates", "feature_code", 
+        "country_code", "admin1_code", "admin2_code", "population", "pop_score", "alt_names_score", "country_score", "admin1_score", "hierarchy_score", "score"]
+    n_candidates: int
+        The number of candidates that should be shown for each location. The candidates are sorted in descending order based on their score.
+        Setting this to 1 will print only the top candidate.
+    """
+
+    for location in results:
         for field in fields:
             print(f"{field}: {location[field]}")
         i = 0
@@ -109,6 +214,7 @@ def print_all_mappings(
     results : List[Dict[str, Any]]
         Results from geoparsing.
     """
+
     print_order = [[], [], [], [], []]
     solutions_dict = create_solutions_dict(file_path)
     for location_name, value in solutions_dict.items():
@@ -151,6 +257,20 @@ def print_all_mappings(
 def convert_geonames(
         geonames_entry: Dict[str, Any]
 ) -> Dict[str, Any]:
+    """
+    Convert a GeoNames index entry into one that is usable in the geoparser.
+
+    Parameters
+    ----------
+    geonames_entry : Dict[str, Any]
+        An indexed GeoNames entry.
+
+    Returns
+    -------
+    Dict[str, Any]
+        A dictionary which encapsulates the GeoNames entry with the information needed in the geoparser.
+    """
+
     return {"dataset": "geonames", 
             "id": geonames_entry["geonameid"], 
             "name": geonames_entry["name"], 
@@ -175,6 +295,20 @@ def convert_geonames(
 def convert_stedsnavn(
         stedsnavn_entry: Dict[str, Any]
 ) -> Dict[str, Any]:
+    """
+    Convert a Stedsnavn index entry into one that is usable in the geoparser.
+
+    Parameters
+    ----------
+    stedsnavn_entry : Dict[str, Any]
+        An indexed Stedsnavn entry.
+
+    Returns
+    -------
+    Dict[str, Any]
+        A dictionary which encapsulates the Stedsnavn entry with the information needed in the geoparser.
+    """
+
     return {"dataset": "stedsnavn", 
             "id": stedsnavn_entry["stedsnavnid"], 
             "name": stedsnavn_entry["name"], 
@@ -195,7 +329,17 @@ def get_top_candidate(
     """
     Return the top candidate of a location.
     This will always be the first candidate in the candidate list.
-    If the location has no candidates, return None.
+
+    Parameters
+    ----------
+    location : Dict[str, Any]
+        The location entity to retrieve the top candidate for.
+
+    Returns
+    -------
+    Union[Dict[str, Any], None]
+        The top candidate for a location entity, or None if it does not have any.
     """
+
     if len(location["candidates"]) == 0: return None
     return location["candidates"][0]
