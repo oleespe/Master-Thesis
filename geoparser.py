@@ -23,6 +23,9 @@ def geoparse_pdf(
         verbose: bool = True,
         pop_weight: float = 1,
         alt_names_weight: float = 1,
+        country_weight: float = 1,
+        admin1_weight: float = 1,
+        hierarchy_weight: float = 1,
         co_candidates_weight: float = 1,
         co_text_weight: float = 1,
         adm1_candidates_weight: float = 1,
@@ -33,7 +36,7 @@ def geoparse_pdf(
     if verbose: print(f"Started parsing PDF with path: {file_path}")
     text = pdf_parser(file_path, is_wikipedia)
     if verbose: print(f"Finished parsing PDF")
-    return geoparse(text, verbose, pop_weight, alt_names_weight, co_candidates_weight, 
+    return geoparse(text, verbose, pop_weight, alt_names_weight, country_weight, admin1_weight, hierarchy_weight, co_candidates_weight, 
                     co_text_weight, adm1_candidates_weight, adm1_text_weight, country_cutoff, adm1_cutoff)
 
 def pypdf2_parse(
@@ -72,6 +75,9 @@ def geoparse(
         verbose: bool = True,
         pop_weight: float = 1,
         alt_names_weight: float = 1,
+        country_weight: float = 1,
+        admin1_weight: float = 1,
+        hierarchy_weight: float = 1,
         co_candidates_weight: float = 1,
         co_text_weight: float = 1,
         adm1_candidates_weight: float = 1,
@@ -111,9 +117,9 @@ def geoparse(
     inferred_adm1 = infer_adm1(locations_data, es, adm1_candidates_weight, adm1_text_weight, adm1_cutoff)
     
     if verbose: print("Ranking candidates")
-    searched_entries = {}
     for location in locations_data:
-        rank_advanced(location, locations_data, es, text, searched_entries, inferred_countries, inferred_adm1, pop_weight, alt_names_weight)
+        rank(location, locations_data, es, text, inferred_countries, inferred_adm1, 
+             pop_weight, alt_names_weight, country_weight, admin1_weight, hierarchy_weight)
     if verbose: print("Finished geoparsing process")
     return {
         "inferred_countries": inferred_countries, 
@@ -159,16 +165,6 @@ def find_candidates(
         es: Elasticsearch,
         place_name: str,
 ) -> List[Dict[str, Any]]:
-    # Difficulties:
-    # 1. We generally want to rank the highest scoring results, i.e., the ones whose name most closely resembles the retrieved place name.
-    # A problem with this can be found in found entities such as "Norge", whose name in geonames is "Kingdom of Norway". 
-    # And while "Norge" is a registered alternate name for "Kingdom of Norway", it will naturally have a much lower score than the ones whose name is simply "Norge".
-    # This should presumably mainly be a problem for country names, as they are the ones that are mainly translated into specific languages, while smaller areas/places are not?
-
-    # Initial baseline approach:
-    # If place name is a country, filter for feature_code="PCLI"
-    # Select amongst entries whose name matches perfectly in "name", "asciiname" or "alternatenames"
-
     s = Search(using=es, index="geonames_custom")
     q = {
         "multi_match": {
@@ -191,29 +187,7 @@ def find_candidates(
     results = [convert_geonames(result.to_dict()) for result in q_results if result["name"] == place_name or result["asciiname"] == place_name or place_name in result["alternatenames"]]
     if len(results) != 0:
         return results
-
-    # If there are no candidates in geonames, search stedsnavn.
-    # TODO: Best approach for handling stedsnavn results would be to convert them into the same representation as geonames, 
-    # otherwise two different sets of logic will have to be produced for the scoring algorithms.
     
-    # Two approaches to doing this:
-    # Do the representation before indexing - Has the advantage of letting us then use the same queries on both datasets.
-    # Do the representation when accessing the data - Will have to convert both datasets on use. Has the advantage of letting the individual datasets be in their rawest form.
-
-    # A common format should look something like this:
-    # {type: stedsnavn/geonames, id: "", name: "", asciiname: "", alternatenames: [""], feature_class: "", country_code: "", feature_code: "", admin1_code: "", admin2_code: "", population: "", coordinates: ""}
-    # This is basically the geonames format. Feature class is maybe not necessary.
-    # In short, we need names info, id, type info, hierarchy info, population, and coordinates.
-
-    # Do we draw candidates from both datasets or only from stedsnavn if geonames returns nothing.
-    # The major problem with drawing candidates from both is that we will get duplicate entries a lot of the time, i.e., we will have candidates from both geonames and stedsnavn that refer to the same geographical location.
-    # Do not think there is a good way of figuring out if a geonames and stedsnavn entry refer to the same place.
-    # Could potentially still run the geoparsing process with duplicate entries like this, but will maybe mess up stuff.
-    # Should therefore probably only get candidates from stedsnavn when necessary.
-
-    # TODO: Solution for this.
-    # Only draw candidates when none are found from geonames.
-    # Convert to geonames like format after indexing.
     s = Search(using=es, index="stedsnavn")
     q = {
         "multi_match": {
@@ -227,46 +201,6 @@ def find_candidates(
     # which therefore gets omitted in the below check.
     results = [convert_stedsnavn(result.to_dict()) for result in q_results if result["name"] == place_name or place_name in result["alternatenames"]]
     return results
-    # TODO: If place name is not in "name", "asciiname" or "alternatenames", we currently return nothing.
-
-def find_features():
-    # Need to find features for retrieved location entities, as this will most likely be useful regardless of the approach taken to improve ranking algorithm.
-    # 1. Some form of hierarchy. Is the place a country or adm1 etc...
-    # 2. Check for adjacent words such as "gård/gården", "kirke" or "by/byen". Should also check for suffixes such as "fjellet/fjell/fjellene" or "Tunell".
-    # 3. Check for adjacent words that are other entities, i.e., "Trondheim i Trøndelag"
-
-    # Should these features be used when finding candidates or only for ranking them?
-    # Some features are also probably on a document level, for example figuring out which countries are relevant.
-
-    pass
-
-# def find_adjacency_features(
-#         location: Dict[str, Any],
-#         entity_names: List[str],
-#         text: str,
-#         width: int = 3
-# ) -> Dict[str, Any]:
-#     adjacency_features = {"adj_entities": []}
-#     start_window, end_window = width*50, width*50
-#     if start_window > location["start_char"]: start_window = location["start_char"]
-#     if end_window > len(text) - location["end_char"]: end_window = len(text) - location["end_char"]
-
-#     prev_split = text[location["start_char"]-start_window:location["start_char"]].split()
-#     next_split = text[location["end_char"]:end_window+location["end_char"]].split()
-#     prev_text, next_text = [], []
-#     if len(prev_split) < width: prev_text = prev_split
-#     else: prev_text = prev_split[-width:]
-#     if len(next_split) < width: next_text = next_split
-#     else: next_text = next_split[:width]
-
-#     for word in prev_text + next_text:
-#         word = word.strip(";:-., ")
-#         # TODO: This currently does not handle entities with multiple words, e.g., "Fredriksten festning".
-#         # Can potentially be solved with ngrams or something similar.
-#         if word in entity_names:
-#             adjacency_features["adj_entities"].append(word)
-        
-#     return adjacency_features
 
 def calculate_entity_distance(
         text: str,
@@ -323,7 +257,7 @@ def infer_countries(
             weighted_mentions[key] = (candidates_weight * norm_weights_factor * (candidates_mentions[key] / total_mentions_candidates)) + (text_weight * norm_weights_factor * (text_mentions[key] / total_mentions_text))
 
     if not isclose(sum(weighted_mentions.values()), 1):
-        print("Warning: Got weighted mentions not properly normalized: ", sum(weighted_mentions.values()))
+        print("Warning: Got country weighted mentions not properly normalized: ", sum(weighted_mentions.values()))
     
     # Select top n countries.
     top_n_list = sorted(zip(weighted_mentions.values(), weighted_mentions.keys()), reverse=True)[:cutoff]
@@ -332,18 +266,9 @@ def infer_countries(
     top_n_refactored = {code: value * factor for code, value in top_n.items()}
     total_sum_cutoff = sum(top_n_refactored.values())
     if not isclose(total_sum_cutoff, 1):
-        print("Warning: Got weighted mentions cutoff not properly normalized: ", top_n_refactored)
+        print("Warning: Got country weighted mentions cutoff not properly normalized: ", top_n_refactored)
     
     return top_n_refactored
-
-    # Remove values below cutoff and re-normalize
-    factor = 1 / sum([value for value in weighted_mentions.values() if value >= cutoff])
-    weighted_mentions_cutoff = {key: value*factor for key, value in weighted_mentions.items() if value >= cutoff}
-
-    if not isclose(sum(weighted_mentions_cutoff.values()), 1):
-        print("Warning: Got weighted mentions cutoff not properly normalized: ", sum(weighted_mentions_cutoff.values()))
-
-    return dict(sorted(weighted_mentions_cutoff.items(), key=lambda item: item[1], reverse=True))
 
 def infer_adm1(
         locations_data: List[Dict[str, Any]],
@@ -364,7 +289,7 @@ def infer_adm1(
             country_admin1 = candidate["country_code"] + "." + candidate["admin1_code"]
             if country_admin1 not in ADMIN1_LIST: continue # TODO: This will ignore any admin code not in the official geonames list. Admin codes such as historical ones.
             if country_admin1 in candidates_adm1: continue
-            candidates_adm1.append(candidate["country_code"] + candidate["admin1_code"])
+            candidates_adm1.append(country_admin1)
             if candidate["country_code"] not in candidate_mentions:
                 candidate_mentions[candidate["country_code"]] = {candidate["admin1_code"]: 1}
             elif candidate["admin1_code"] not in candidate_mentions[candidate["country_code"]]:
@@ -392,7 +317,6 @@ def infer_adm1(
             }
             q_results = s.query(q).execute()
 
-            # TODO: Need actual error handling here. Probably set up some sort of logging.
             if len(q_results) > 1:
                 print(f"Warning: Found more than one result for adm1 query. adm1: {adm1_code}, country: {country_code}")
                 continue
@@ -407,6 +331,7 @@ def infer_adm1(
     for country, value in text_mentions.items():
         for adm1, _ in value.items():
             text_mentions[country][adm1] = 0
+
     
     # Count the number of times an admin1 is mentioned in the text.
     for location in locations_data:
@@ -428,6 +353,9 @@ def infer_adm1(
     for country_code, country_dict in candidate_mentions.items():
         for admin1_code, _ in country_dict.items():
             if country_code not in weighted_mentions: weighted_mentions[country_code] = {}
+            if total_text_mentions == 0: 
+                weighted_mentions[country_code][admin1_code] = candidate_mentions[country_code][admin1_code] / total_candidate_mentions
+                continue
             candidates_weighted_mentions = candidates_weight * norm_weights_factor * (candidate_mentions[country_code][admin1_code] / total_candidate_mentions) if total_candidate_mentions != 0 else 0
             text_weighted_mentions = text_weight * norm_weights_factor * (text_mentions[country_code][admin1_code] / total_text_mentions) if total_text_mentions != 0 else 0
             weighted_mentions[country_code][admin1_code] = candidates_weighted_mentions + text_weighted_mentions
@@ -437,9 +365,8 @@ def infer_adm1(
     for _, value in weighted_mentions.items():
         total_sum += sum(value.values())
     if not isclose(total_sum, 1):
-        print("Warning: Got weighted mentions not properly normalized: ", total_sum)
+        print("Warning: Got admin1 weighted mentions not properly normalized: ", total_sum)
 
-    # TODO: Fix this properly tomorrow. Needs to also be implemented for infer_countries()
     simplified_weighted_mentions = {} # Instead of {country_code: {admin_code: value}} we have {country_code.admin_code: value}
     for country_code, country_dict in weighted_mentions.items():
         for admin1_code, value in country_dict.items():
@@ -464,35 +391,12 @@ def infer_adm1(
     for _, value in top_n_refactored.items():
         total_sum_cutoff += sum(value.values())
     if not isclose(total_sum_cutoff, 1):
-        print("Warning: Got weighted mentions cutoff not properly normalized: ", top_n_refactored)
+        print("Warning: Got admin1 weighted mentions cutoff not properly normalized: ", top_n_refactored)
     return top_n_refactored
-
-    # Remove values below cutoff and re-normalize
-    sum_cutoff = 0
-    for _, country_dict in weighted_mentions.items():
-        for _, value in country_dict.items():
-            if value >= cutoff: sum_cutoff += value
-    factor = 1 / sum_cutoff
-    weighted_mentions_cutoff = {}
-    for country_code, country_dict in weighted_mentions.items():
-        for admin1_code, value in country_dict.items():
-            if value >= cutoff:
-                if country_code not in weighted_mentions_cutoff: weighted_mentions_cutoff[country_code] = {}
-                weighted_mentions_cutoff[country_code][admin1_code] = value * factor
-
-    # Check if weighted cutoff dictionary is properly normalized
-    total_sum_cutoff = 0
-    for _, value in weighted_mentions_cutoff.items():
-        total_sum_cutoff += sum(value.values())
-    if not isclose(total_sum, 1):
-        print("Warning: Got weighted mentions cutoff not properly normalized: ", total_sum_cutoff)
-
-    return weighted_mentions_cutoff
 
 def get_ancestors(
         candidate: Dict[str, Any],
         es: Elasticsearch,
-        searched_entries: Dict[str, Dict[str, Any]]
 ) -> Dict[str, Dict[str, Any]]:
     ancestors = {"country": None, "admin1": None, "admin2": None}
 
@@ -503,152 +407,104 @@ def get_ancestors(
 
     # TODO: See if doing this actually increases performance.
     # Nullify dict for now, to deactivate the feature without having to remove the relevant code.
-    searched_entries = {}
     s = Search(using=es, index="geonames_custom")
     # Search for country geonames entry.
     if not (feature_code == "PCLI" or feature_code == "nasjon"):
-        if country_code not in searched_entries:
-            q = {
-                "bool": {
-                    "must": [
-                        {"match": {"country_code": {"query": country_code}}},
-                        {"match": {"feature_code": {"query": "PCLI"}}}
-                    ]
-                }
+        q = {
+            "bool": {
+                "must": [
+                    {"match": {"country_code": {"query": country_code}}},
+                    {"match": {"feature_code": {"query": "PCLI"}}}
+                ]
             }
-            q_results = s.query(q).execute()
+        }
+        q_results = s.query(q).execute()
 
-            if len(q_results) > 1:
-                print(f"Warning: Found more than one result for country query. country: {country_code}")
-            elif len(q_results) == 0:
-                print(f"Warning: Found no results for country query. country: {country_code}")
-            else:
-                ancestors["country"] = q_results[0].to_dict()
-                searched_entries[country_code] = q_results[0].to_dict()
+        if len(q_results) > 1:
+            print(f"Warning: Found more than one result for country query. country: {country_code}")
+        elif len(q_results) == 0:
+            print(f"Warning: Found no results for country query. country: {country_code}")
         else:
-            ancestors["country"] = searched_entries[country_code]
+            ancestors["country"] = q_results[0].to_dict()
 
     # Search for admin1 geonames entry.
     if f"{country_code}.{admin1_code}" in ADMIN1_LIST and not (feature_code == "ADM1" or feature_code == "fylke"):
-        if f"{country_code}.{admin1_code}" not in searched_entries:
-            q = {
-                "bool": {
-                    "must": [
-                        {"match": {"country_code": {"query": country_code}}},
-                        {"match": {"admin1_code": {"query": admin1_code}}},
-                        {"match": {"feature_code": {"query": "ADM1"}}}
-                    ]
-                }
+        q = {
+            "bool": {
+                "must": [
+                    {"match": {"country_code": {"query": country_code}}},
+                    {"match": {"admin1_code": {"query": admin1_code}}},
+                    {"match": {"feature_code": {"query": "ADM1"}}}
+                ]
             }
-            q_results = s.query(q).execute()
+        }
+        q_results = s.query(q).execute()
 
-            if len(q_results) > 1:
-                print(f"Warning: Found more than one result for adm1 query. adm1: {admin1_code}, country: {country_code}")
-            elif len(q_results) == 0:
-                print(f"Warning: Found no results for adm1 query. adm1: {admin1_code}, country: {country_code}")
-            else:
-                ancestors["admin1"] = q_results[0].to_dict()
-                searched_entries[f"{country_code}.{admin1_code}"] = q_results[0].to_dict()
+        if len(q_results) > 1:
+            print(f"Warning: Found more than one result for adm1 query. adm1: {admin1_code}, country: {country_code}")
+        elif len(q_results) == 0:
+            print(f"Warning: Found no results for adm1 query. adm1: {admin1_code}, country: {country_code}")
         else:
-            ancestors["admin1"] = searched_entries[f"{country_code}.{admin1_code}"]
+            ancestors["admin1"] = q_results[0].to_dict()
 
     # Search for admin2 geonames entry.
-    if f"{country_code}.{admin1_code}.{admin2_code}" in ADMIN2_LIST and not (feature_code != "ADM2" or feature_code != "kommune"):
-        if f"{country_code}.{admin1_code}.{admin2_code}" not in searched_entries:
-            q = {
-                "bool": {
-                    "must": [
-                        {"match": {"country_code": {"query": country_code}}},
-                        {"match": {"admin1_code": {"query": admin1_code}}},
-                        {"match": {"admin2_code": {"query": admin2_code}}},
-                        {"match": {"feature_code": {"query": "ADM2"}}}
-                    ]
-                }
+    if f"{country_code}.{admin1_code}.{admin2_code}" in ADMIN2_LIST and not (feature_code == "ADM2" or feature_code == "kommune"):
+        q = {
+            "bool": {
+                "must": [
+                    {"match": {"country_code": {"query": country_code}}},
+                    {"match": {"admin1_code": {"query": admin1_code}}},
+                    {"match": {"admin2_code": {"query": admin2_code}}},
+                    {"match": {"feature_code": {"query": "ADM2"}}}
+                ]
             }
-            q_results = s.query(q).execute()
+        }
+        q_results = s.query(q).execute()
 
-            if len(q_results) > 1:
-                print(f"Warning: Found more than one result for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
-            elif len(q_results) == 0:
-                print(f"Warning: Found no results for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
-            else:
-                ancestors["admin2"] = q_results[0].to_dict()
-                searched_entries[f"{country_code}.{admin1_code}.{admin2_code}"] = q_results[0].to_dict()
+        if len(q_results) > 1:
+            print(f"Warning: Found more than one result for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
+        elif len(q_results) == 0:
+            print(f"Warning: Found no results for adm2 query. adm2: {admin2_code}, adm1: {admin1_code}, country: {country_code}")
         else:
-            ancestors["admin2"] = searched_entries[f"{country_code}.{admin1_code}.{admin2_code}"]
+            ancestors["admin2"] = q_results[0].to_dict()
+
     return ancestors
 
-def rank_baseline(
-        candidates: List[Dict[str, Any]]
-) -> Dict[str, Any]:
-    # TODO: Not functional atm. Needs to sort candidates by length of alternate names, 
-    # instead of just returning one.
-    return
-    # Initial baseline approach:
-    # Select candidate with the most alternate names
-
-    n_alt_names = 0
-    index = 0
-    for i, candidate in enumerate(candidates):
-        if len(candidate["alternatenames"]) > n_alt_names:
-            index = i
-            n_alt_names = len(candidate["alternatenames"])
-    
-    # TODO: This returns only one select candidate atm, 
-    # where a proper solution would probably return a sorted ranking amongst all candidate pairs.
-    return candidates[index]
-
-def rank_advanced(
+def rank(
         location: Dict[str, Any],
         locations_data: List[Dict[str, Any]],
         es: Elasticsearch,
         text: str,
-        searched_entries: Dict[str, Dict[str, Any]],
         inferred_countries: Dict[str, float],
         inferred_adm1: Dict[str, Dict[str, float]],
         pop_weight: float,
         alt_names_weight: float,
+        country_weight: float = 1,
+        admin1_weight: float = 1,
+        hierarchy_weight: float = 1
 ):
     if len(location["candidates"]) == 0: return
-    # 1. Hierarchy
-    # 2. Proximity minimization?
-    # Can the candidate be resolved to a hierarchy?
-    # How to resolve to hierarchy?
-    # Do several passes to develop a hierarchy? E.g., do one pass to find country, then another to find first-order admin levels?
-    # Another approach would be to check every other candidate for other toponyms and see if a hierarchy can be established like that.
-
-    # Bottom-up approach:
-    # Look at all entities individually.
-    # For each one, see if any other toponym forms a hierarchy with it.
-    # Geotxt kinda does this, and assigns a score to each combination, which is then in turn used to select the best total combination.
-
-    # Top-down approach:
-    # Try and resolve top level toponyms first, such as first order administrative ones.
-    # If we are confident that a toponym is i.e., an adm1, use it to resolve other toponyms in the text that belong to its hierarchy.
-
-    # Two ways of establishing hierarchies:
-    # First is to look at each toponym, and see if any ancestor's exist in the text.
-    # Second is to see if any of the toponyms are part of a common hierarchy, i.e., a sort of spatial minimization.
-
-    # Inferring geographic scope:
-    # Can do this on adm1 and adm2.
-    # Do a pass and look for potential adm1 mentions, as well as mentions in toponym candidates.
-    # Do the same thing but for adm2.
-
-    # Attempt1:
-    # Infer relevant countries.
-    # Infer relevant geographic scope.
-    # Go through every toponym and look for ancestors nearby in text.
-    # Calculate confidence score for each candidate based on inclusion in relevant country, relevant geographic scope, and distance to ancestor mentions.
 
     for candidate in location["candidates"]:
-        candidate["pop_score"] = pop_score(int(candidate["population"]), pop_weight)
-        candidate["alt_names_score"] = alt_names_score(len(candidate["alternatenames"]), alt_names_weight)
+        norm_factor = 1 / (pop_weight + alt_names_weight + country_weight + admin1_weight + hierarchy_weight)
+        candidate["pop_score"] = pop_score(int(candidate["population"]))
+        candidate["alt_names_score"] = alt_names_score(len(candidate["alternatenames"]))
         candidate["country_score"] = country_score(inferred_countries, candidate["country_code"])
         candidate["admin1_score"] = admin1_score(inferred_adm1, candidate["country_code"], candidate["admin1_code"])
-        candidate["hierarchy_score"] = hierarchy_score(candidate, es, location, locations_data, text, searched_entries)
-        candidate["score"] = candidate["pop_score"] + candidate["alt_names_score"] + candidate["country_score"] + candidate["admin1_score"] + candidate["hierarchy_score"]
+        candidate["hierarchy_score"] = hierarchy_score(candidate, es, location, locations_data, text)
+        candidate["score"] = \
+                (candidate["pop_score"] * pop_weight) + \
+                (candidate["alt_names_score"] * alt_names_weight) + \
+                (candidate["country_score"] * country_weight) + \
+                (candidate["admin1_score"] * admin1_weight) + \
+                (candidate["hierarchy_score"] * hierarchy_weight)
+        candidate["score"] = (candidate["score"] * norm_factor)**(1/4)
     
+    # TODO: Should try and implement an algorithm that tries to find hierarchical pairs.
+    # For instance, in the text "Jeg reiste fra Bergen til Oslo", it determines Bergen as Bergen County, USA, and Oslo as Oslo, Norway.
+    # In cases like these, it should recognize that these can both potentially belong to Norway, 
+    # and therefore boost their corresponding scores accordingly.
+
     def sort(candidate):
         return candidate["score"]
     location["candidates"] = sorted(location["candidates"], key=sort, reverse=True)
@@ -671,7 +527,7 @@ def find_hierarchy_distances(
     
     hierarchy_distances_copy = deepcopy(hierarchy_distances)
     for key, value in hierarchy_distances.items():
-        # TODO: If the distance is ever 0, it means that a candidate shares the same name with its hierarchical ancestors.
+        # If the distance is ever 0, it means that a candidate shares the same name with its hierarchical ancestors.
         # For instance, the entity Trøndelag will return the candidate Trøndelag with feature_code RGN, as being part of the admin1 division Trøndelag.
         # Calculating the distance for these types of entries will always return 0.
         # For now we will simply remove these.
@@ -684,35 +540,30 @@ def hierarchy_score(
         location: Dict[str, Any],
         locations_data: List[Dict[str, Any]],
         text: str,
-        searched_entries: Dict[str, Dict[str, Any]]
 ) -> float:
-    ancestors = get_ancestors(candidate, es, searched_entries)
+    ancestors = get_ancestors(candidate, es)
     hierarchy_distances = find_hierarchy_distances(ancestors, location, locations_data, text)
-    # TODO: These are random weights for now
     score = 0
     for key, value in hierarchy_distances.items():
         temp_score = 0
-        if key == "admin2": temp_score = (1 / value) * 1
-        if key == "admin1": temp_score = (1 / value) * 0.2
-        if key == "country": temp_score = (1 / value) * 0.1
+        if key == "admin2": temp_score = (1 / log2(value+1)) * 1
+        if key == "admin1": temp_score = (1 / log2(value+1)) * 0.5
+        if key == "country": temp_score = (1 / log2(value+1)) * 0.25
         if temp_score > score: score = temp_score
     return score
 
-# TODO: Weights should not be applied here, but rather in the overall score
 def pop_score(
-        candidate_pop: int,
-        weight: int
+        candidate_pop: int
 ) -> float:
     if candidate_pop == 0: return 0
     scaled_pop = candidate_pop / 10000
-    return logistic_function(log2(scaled_pop), 3) * weight
+    return logistic_function(log2(scaled_pop), 3)
 
 def alt_names_score(
-        num_alt_names: int,
-        weight: int
+        num_alt_names: int
 ) -> float:
     if num_alt_names == 0: return 0
-    return logistic_function(log2(num_alt_names), 3) * weight
+    return logistic_function(log2(num_alt_names), 3)
 
 def country_score(
         inferred_countries: Dict[str, float],
@@ -729,47 +580,3 @@ def admin1_score(
     if country_code not in inferred_adm1: return 0
     if admin1_code not in inferred_adm1[country_code]: return 0
     return inferred_adm1[country_code][admin1_code]
-
-def analyze_performance(
-        file_path: str,
-        locations_data: List[Dict[str, Any]]
-):  
-    # TODO: Needs to be fixed to actually support multiple entries of same entity.
-    return
-    solutions_dict = create_solutions_dict(file_path)
-    
-    # P0 and P1 performance
-    # matching_placenames = {key: value for key, value in geoparse_result.items() if key in solutions_dict} # Place names present in both solution and found through NER
-    matching_placenames = [location for location in locations_data if location["entity_name"] in solutions_dict and location["entity_name"] not in matching_placenames] # Place names present in both solution and found through NER
-    excess_placenames = [key for key, _ in locations_data.items() if key not in solutions_dict] # Place names found through NER, but not in solution
-    missing_placenames = [key for key, _ in solutions_dict.items() if key not in matching_placenames] # Place names present in solution but not found through NER
-    print(f"Pdf place names: {len(solutions_dict)} \
-          \nTotal found place names: {len(locations_data)}, excess: {excess_placenames} \
-          \nMatching place names: {len(matching_placenames)}, missing: {missing_placenames}")
-    
-    # P2 performance
-    missing_query_placename = []
-    for key, value in matching_placenames.items():
-        found_solution = False
-
-        # Search through all candidates, and see if the correct solution is there.
-        for candidate in value["candidates"]:
-            if int(candidate["geonameid"]) == solutions_dict[key]:
-                found_solution = True
-                break
-
-        # No candidate matching the correct geonameid
-        if not found_solution:
-            missing_query_placename.append(key)
-                
-    print(f"Solution in candidates: {len(matching_placenames) - len(missing_query_placename)}, missing: {missing_query_placename}")
-
-    # P3 performance
-    incorrect_best_candidate = [key for key, value in matching_placenames.items() if int(value["best_candidate"]["geonameid"]) != solutions_dict[key]]
-    print(f"Correct best candidates: {len(matching_placenames) - len(incorrect_best_candidate)}, missing: {incorrect_best_candidate}")
-
-
-# TODO: Should try and implement an algorithm that tries to find hierarchical pairs.
-# For instance, in the text "Jeg reiste fra Bergen til Oslo", it determines Bergen as Bergen County, USA, and Oslo as Oslo, Norway.
-# In cases like these, it should recognize that these can both potentially belong to Norway, 
-# and therefore boost their corresponding scores accordingly.

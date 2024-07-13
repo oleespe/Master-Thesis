@@ -118,24 +118,20 @@ def print_all_mappings(
             if top_candidate is None:
                 if location_name == result["entity_name"]:
                     print_order[0].append([location_name, value['id'], value['dataset'], result['entity_name'], "None", "None", "None"])
-                    # print_order[0].append(f"({location_name}, {value['id']}, {value['dataset']}) -> Entity name: {result['entity_name']}, Top candidate: None")
                     match_found = True
                     break
                 continue
             if location_name == top_candidate["name"] or location_name == top_candidate["asciiname"] or location_name in top_candidate["alternatenames"]:
                 print_order[1].append([location_name, value['id'], value['dataset'], result['entity_name'], top_candidate['name'], top_candidate['id'], top_candidate['dataset']])
-                # print_order[1].append(f"({location_name}, {value['id']}, {value['dataset']}) -> Entity name: {result['entity_name']}, Top candidate: ({top_candidate['name']}, {top_candidate['id']}, {top_candidate['dataset']})")
                 match_found = True
                 break
         if not match_found:
             print_order[2].append([location_name, value['id'], value['dataset'], "None", "None", "None", "None"])
-            # print_order[2].append(f"({location_name}, {value['id']}, {value['dataset']}) -> Entity name: None, Top candidate: None")
     for result in results:
         top_candidate = get_top_candidate(result)
         if top_candidate is None:
             if result["entity_name"] not in solutions_dict.keys():
                 print_order[3].append(["None", "None", "None", result['entity_name'], "None", "None", "None"])
-                # print_order[3].append(f"None -> Entity name: {result['entity_name']}, Top candidate: None")
             continue
         match_found = False
         for location_name, _ in solutions_dict.items():
@@ -144,13 +140,11 @@ def print_all_mappings(
                 break
         if not match_found:
             print_order[4].append(["None", "None", "None", result['entity_name'], top_candidate['name'], top_candidate['id'], top_candidate['dataset']])
-            # print_order[4].append(f"None -> Entity name: {result['entity_name']}, Top candidate: ({top_candidate['name']}, {top_candidate['id']}, {top_candidate['dataset']})")
     
     tabulate_list = []
     for list in print_order:
         for entry in list:
             tabulate_list.append(entry)
-            # print(entry)
     print(tabulate(tabulate_list, headers=["Location Mention", "Toponym ID", "Toponym Dataset", "Entity Name", 
                             "Candidate Name", "Candidate ID", "Candidate Dataset"]))
 
@@ -191,6 +185,8 @@ def convert_stedsnavn(
             "country_code": "NO",
             "admin1_code": ADMIN1_MAP[stedsnavn_entry["admin_codes"][0][0]], 
             "admin2_code": ADMIN2_MAP[stedsnavn_entry["admin_codes"][0][1]],
+            # "admin1_code": stedsnavn_entry["admin_codes"][0][0],
+            # "admin2_code": stedsnavn_entry["admin_codes"][0][1],
             "population": "0"} # Stedsnavn has no population data
 
 def get_top_candidate(

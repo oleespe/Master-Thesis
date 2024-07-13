@@ -26,7 +26,7 @@ INDEX_SETTINGS = {
 }
 
 def parse_geonames_data(reader):
-    for row in tqdm(reader, total=12571835):
+    for row in tqdm(reader, total=12760304):
         try:
             coords = f"{row[4]},{row[5]}"
             alt_names = list(set(row[3].split(",")))
@@ -69,7 +69,7 @@ if __name__ == "__main__":
     if len(sys.argv) != 2:
         print(f"Invalid number of arguments. Script takes 1 argument but {len(sys.argv)-1} were provided.")
         exit()
-    file = sys.argv[1]
+    file = open(sys.argv[1], "rt", encoding="utf-8")
     
     reader = csv.reader(file, delimiter="\t")
     actions = parse_geonames_data(reader)
