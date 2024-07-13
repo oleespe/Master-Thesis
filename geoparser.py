@@ -1,16 +1,12 @@
+import spacy
 from typing import Callable, Any, List, Dict, Tuple
 from elasticsearch import Elasticsearch
 from elasticsearch_dsl import Search
-from pdf2image import convert_from_path
-from helpers import *
+from utility import *
 from lists import *
 from math import isclose, log2
 from copy import deepcopy
 from typing import Counter
-import spacy
-import PyPDF2
-import pytesseract
-import numpy as np
 
 # These are read here to increase performance.
 ADMIN1_LIST = read_admin1("data/admin1CodesASCII.txt")[0].to_list()
@@ -39,37 +35,6 @@ def geoparse_pdf(
     return geoparse(text, verbose, pop_weight, alt_names_weight, country_weight, admin1_weight, hierarchy_weight, co_candidates_weight, 
                     co_text_weight, adm1_candidates_weight, adm1_text_weight, country_cutoff, adm1_cutoff)
 
-def pypdf2_parse(
-        file_path: str,
-        is_wikipedia: bool # Is the pdf a wikipedia article? 
-) -> str:
-    with open(file_path, "rb") as file:
-        pdfReader = PyPDF2.PdfReader(file, strict=True)
-        text = ""
-        for page in pdfReader.pages:
-            text += page.extract_text() + "\n\n"
-        # TODO: Potential preprocessing for pypdf
-        return text.strip()
-
-def ocr_parse(
-        file_path: str,
-        is_wikipedia: bool # Is the pdf a wikipedia article? 
-) -> str:
-    pages = convert_from_path(file_path)
-    text = ""
-    for page in pages:
-        text += pytesseract.image_to_string(deskew(np.array(page)), lang="nor")
-
-    # Some custom logic to help with wikipedia articles 
-    if is_wikipedia:
-        text_split = text.split("\n")
-        for i, line in enumerate(text_split):
-            # TODO: This can lead to mistakes if these strings are in an article without being in the footer.
-            if line == "Litteratur" or line == "Referanser" or line == "Eksterne lenker":
-                text = "\n".join(text_split[:i])
-                break
-    return text.strip()
-
 def geoparse(
         text: str,
         verbose: bool = True,
@@ -93,7 +58,7 @@ def geoparse(
     for entity in entities:
         entity_name = entity.text.strip()
 
-        # Check for names that are obviously not places
+        # Check for names that are obviously not places.
         if entity_name.isspace() or entity_name.islower():
             continue
         
@@ -108,7 +73,6 @@ def geoparse(
     es = Elasticsearch("http://localhost:9200")
     entity_names = [location["entity_name"] for location in locations_data]
 
-    # Iterate through found place names.
     if verbose: print("Finding candidates")
     for location in locations_data:
         location["candidates"] = find_candidates(es, location["entity_name"])
@@ -126,7 +90,6 @@ def geoparse(
         "inferred_admin1": inferred_adm1, 
         "results": handle_duplicates(entity_names, locations_data)
     }
-
 
 def handle_duplicates(
         entity_names: List[str],
@@ -160,17 +123,18 @@ def handle_duplicates(
         results.append(locations_data_copy[best_index])
     return results
 
-
 def find_candidates(
         es: Elasticsearch,
         place_name: str,
 ) -> List[Dict[str, Any]]:
     s = Search(using=es, index="geonames_custom")
+
+    # (type: phrase) ensures that the entire place name is present. Without it, a query for a place name like "Rio de Janeiro" would also return any place with "Rio" in it.
     q = {
         "multi_match": {
             "query": place_name,
             "fields": ["name", "asciiname", "alternatenames"],
-            "type": "phrase" # (type: phrase) ensures that the entire place name is present. Without it, a query for a place name like "Rio de Janeiro" would also return any place with "Rio" in it.
+            "type": "phrase"
         }
     }
 
@@ -231,7 +195,9 @@ def infer_countries(
         candidate_countries = []
         if len(location["candidates"]) == 1:
             candidate = location["candidates"][0]
-            if candidate["feature_code"] == "PCLI" or candidate["feature_code"] == "nasjon": # candidate["feature_code"] == "nasjon" is technically redundant as these entries should always be found by GeoNames
+
+            # candidate["feature_code"] == "nasjon" is technically redundant as these entries should always be found by GeoNames
+            if candidate["feature_code"] == "PCLI" or candidate["feature_code"] == "nasjon":
                 if candidate["country_code"] not in text_mentions:
                     text_mentions[candidate["country_code"]] = 1
                 else: text_mentions[candidate["country_code"]] += 1
@@ -242,7 +208,7 @@ def infer_countries(
                 candidates_mentions[candidate["country_code"]] = 1
             else: candidates_mentions[candidate["country_code"]] += 1
     
-    # Calculate a combined weighted sum between country mentions in text and country mentions in candidates
+    # Calculate a combined weighted sum between country mentions in text and country mentions in candidates.
     weighted_mentions = {}
     total_mentions_candidates = sum(candidates_mentions.values())
     total_mentions_text = sum(text_mentions.values())
@@ -281,14 +247,19 @@ def infer_adm1(
     if candidates_weight == 0 and text_weight == 0:
         raise ValueError("both candidates_weight and text_weight are set to 0")
     
-    # Count number of times an adm1 is in at least one of the candidates for a toponym
+    # Count number of times an adm1 is in at least one of the candidates for a toponym.
     candidate_mentions = {}
     for location in locations_data:
         candidates_adm1 = []
         for candidate in location["candidates"]:
             country_admin1 = candidate["country_code"] + "." + candidate["admin1_code"]
-            if country_admin1 not in ADMIN1_LIST: continue # TODO: This will ignore any admin code not in the official geonames list. Admin codes such as historical ones.
+
+            # This will ignore any admin code not in the official geonames list. Admin codes such as historical ones.
+            if country_admin1 not in ADMIN1_LIST: continue
+
+            # Do not count if the admin1 has already been counted for this location entity.
             if country_admin1 in candidates_adm1: continue
+            
             candidates_adm1.append(country_admin1)
             if candidate["country_code"] not in candidate_mentions:
                 candidate_mentions[candidate["country_code"]] = {candidate["admin1_code"]: 1}
@@ -296,8 +267,6 @@ def infer_adm1(
                 candidate_mentions[candidate["country_code"]][candidate["admin1_code"]] = 1
             else: candidate_mentions[candidate["country_code"]][candidate["admin1_code"]] += 1
     
-    # TODO: The statement below might not be true if the NER step fails to find the in text mention?
-
     # For all adm1 mentions retrieved in the previous process, find their entry in Elasticsearch.
     # This should in theory also always include any of the potential adm1 entities found in the text,
     # as it should then be one of the results counted from the previous process.
@@ -339,7 +308,7 @@ def infer_adm1(
             if location["entity_name"] == adm1_mention["name"] or location["entity_name"] == adm1_mention["asciiname"] or location["entity_name"] in adm1_mention["alternatenames"]:
                 text_mentions[adm1_mention["country_code"]][adm1_mention["admin1_code"]] += 1
     
-    # Calculate total number of mentions
+    # Calculate total number of mentions.
     weighted_mentions = {}
     total_candidate_mentions = 0
     total_text_mentions = 0
@@ -360,17 +329,20 @@ def infer_adm1(
             text_weighted_mentions = text_weight * norm_weights_factor * (text_mentions[country_code][admin1_code] / total_text_mentions) if total_text_mentions != 0 else 0
             weighted_mentions[country_code][admin1_code] = candidates_weighted_mentions + text_weighted_mentions
     
-    # Check if weighted dictionary is properly normalized
+    # Check if weighted dictionary is properly normalized.
     total_sum = 0
     for _, value in weighted_mentions.items():
         total_sum += sum(value.values())
     if not isclose(total_sum, 1):
         print("Warning: Got admin1 weighted mentions not properly normalized: ", total_sum)
 
-    simplified_weighted_mentions = {} # Instead of {country_code: {admin_code: value}} we have {country_code.admin_code: value}
+    # Create simplified representation of dictionary. Instead of {country_code: {admin_code: value}} we have {country_code.admin_code: value}.
+    simplified_weighted_mentions = {}
     for country_code, country_dict in weighted_mentions.items():
         for admin1_code, value in country_dict.items():
             simplified_weighted_mentions[f"{country_code}.{admin1_code}"] = value
+
+    # Get the top n admin1 codes.
     top_n_list = sorted(zip(simplified_weighted_mentions.values(), simplified_weighted_mentions.keys()), reverse=True)[:cutoff]
     top_n = {}
     for value, code in top_n_list:
@@ -380,6 +352,7 @@ def infer_adm1(
         if country_code not in top_n: top_n[country_code] = {}
         top_n[country_code][admin1_code] = value
 
+    # Normalize.
     factor = 1 / sum([value for value, _ in top_n_list])
     top_n_refactored = {}
     for country_code, country_dict in top_n.items():
@@ -387,11 +360,13 @@ def infer_adm1(
             if country_code not in top_n_refactored: top_n_refactored[country_code] = {}
             top_n_refactored[country_code][admin1_code] = value * factor
 
+    # Check if weighted list is properly normalized.
     total_sum_cutoff = 0
     for _, value in top_n_refactored.items():
         total_sum_cutoff += sum(value.values())
     if not isclose(total_sum_cutoff, 1):
         print("Warning: Got admin1 weighted mentions cutoff not properly normalized: ", top_n_refactored)
+    
     return top_n_refactored
 
 def get_ancestors(
@@ -405,9 +380,8 @@ def get_ancestors(
     admin1_code = candidate['admin1_code']
     admin2_code = candidate['admin2_code']
 
-    # TODO: See if doing this actually increases performance.
-    # Nullify dict for now, to deactivate the feature without having to remove the relevant code.
     s = Search(using=es, index="geonames_custom")
+
     # Search for country geonames entry.
     if not (feature_code == "PCLI" or feature_code == "nasjon"):
         q = {
@@ -484,7 +458,6 @@ def rank(
         hierarchy_weight: float = 1
 ):
     if len(location["candidates"]) == 0: return
-
     for candidate in location["candidates"]:
         norm_factor = 1 / (pop_weight + alt_names_weight + country_weight + admin1_weight + hierarchy_weight)
         candidate["pop_score"] = pop_score(int(candidate["population"]))
@@ -534,24 +507,6 @@ def find_hierarchy_distances(
         if value == 0: del hierarchy_distances_copy[key]
     return hierarchy_distances_copy
 
-def hierarchy_score(
-        candidate: Dict[str, Any],
-        es: Elasticsearch,
-        location: Dict[str, Any],
-        locations_data: List[Dict[str, Any]],
-        text: str,
-) -> float:
-    ancestors = get_ancestors(candidate, es)
-    hierarchy_distances = find_hierarchy_distances(ancestors, location, locations_data, text)
-    score = 0
-    for key, value in hierarchy_distances.items():
-        temp_score = 0
-        if key == "admin2": temp_score = (1 / log2(value+1)) * 1
-        if key == "admin1": temp_score = (1 / log2(value+1)) * 0.5
-        if key == "country": temp_score = (1 / log2(value+1)) * 0.25
-        if temp_score > score: score = temp_score
-    return score
-
 def pop_score(
         candidate_pop: int
 ) -> float:
@@ -580,3 +535,21 @@ def admin1_score(
     if country_code not in inferred_adm1: return 0
     if admin1_code not in inferred_adm1[country_code]: return 0
     return inferred_adm1[country_code][admin1_code]
+
+def hierarchy_score(
+        candidate: Dict[str, Any],
+        es: Elasticsearch,
+        location: Dict[str, Any],
+        locations_data: List[Dict[str, Any]],
+        text: str,
+) -> float:
+    ancestors = get_ancestors(candidate, es)
+    hierarchy_distances = find_hierarchy_distances(ancestors, location, locations_data, text)
+    score = 0
+    for key, value in hierarchy_distances.items():
+        temp_score = 0
+        if key == "admin2": temp_score = (1 / log2(value+1)) * 1
+        if key == "admin1": temp_score = (1 / log2(value+1)) * 0.5
+        if key == "country": temp_score = (1 / log2(value+1)) * 0.25
+        if temp_score > score: score = temp_score
+    return score

@@ -1,11 +1,11 @@
+import cv2
+import numpy as np
+import pandas as pd
 from typing import Any, List, Dict, Union
 from math import exp
 from unidecode import unidecode
 from lists import *
 from tabulate import tabulate
-import cv2
-import numpy as np
-import pandas as pd
 
 def create_solutions_dict(
         file_path: str
