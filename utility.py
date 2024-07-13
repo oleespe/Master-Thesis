@@ -35,8 +35,8 @@ def create_solutions_dict(
 
 # Deskew image for ocr parse.
 def deskew(
-        pdf : np.NDArray[Any]
-) -> cv2.MatLike:
+        pdf : np.ndarray
+) -> cv2.typing.MatLike:
     """
     Deskew a pdf, so that it can be used with pytesseract
 
