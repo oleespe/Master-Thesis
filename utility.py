@@ -6,6 +6,7 @@ from math import exp
 from unidecode import unidecode
 from lists import *
 from tabulate import tabulate
+import geopy.distance
 
 def create_solutions_dict(
         file_path: str
@@ -30,7 +31,7 @@ def create_solutions_dict(
     for _, row in solutions.iterrows():
         if row["id"] == 0:
             continue
-        solutions_dict[row["name"]] = {"id": row["id"], "dataset": row["dataset"]}
+        solutions_dict[row["name"]] = {"id": str(row["id"]), "dataset": row["dataset"], "coordinates": row["coordinates"]}
     return solutions_dict
 
 # Deskew image for ocr parse.
@@ -224,21 +225,24 @@ def print_all_mappings(
             top_candidate = get_top_candidate(result)
             if top_candidate is None:
                 if location_name == result["entity_name"]:
-                    print_order[0].append([location_name, value['id'], value['dataset'], result['entity_name'], "None", "None", "None"])
+                    print_order[0].append([location_name, value['id'], value['dataset'], result['entity_name'], "None", "None", "None", "N/A"])
                     match_found = True
                     break
                 continue
             if location_name == result["entity_name"] and (location_name == top_candidate["name"] or location_name == top_candidate["asciiname"] or location_name in top_candidate["alternatenames"]):
-                print_order[1].append([location_name, value['id'], value['dataset'], result['entity_name'], top_candidate['name'], top_candidate['id'], top_candidate['dataset']])
+                coords_1 = (value["coordinates"].split(",")[0], value["coordinates"].split(",")[1])
+                coords_2 = (top_candidate["coordinates"].split(",")[0], top_candidate["coordinates"].split(",")[1])
+                distance = geopy.distance.geodesic(coords_1, coords_2).km
+                print_order[1].append([location_name, value['id'], value['dataset'], result['entity_name'], top_candidate['name'], top_candidate['id'], top_candidate['dataset'], distance])
                 match_found = True
                 break
         if not match_found:
-            print_order[2].append([location_name, value['id'], value['dataset'], "None", "None", "None", "None"])
+            print_order[2].append([location_name, value['id'], value['dataset'], "None", "None", "None", "None", "N/A"])
     for result in results:
         top_candidate = get_top_candidate(result)
         if top_candidate is None:
             if result["entity_name"] not in solutions_dict.keys():
-                print_order[3].append(["None", "None", "None", result['entity_name'], "None", "None", "None"])
+                print_order[3].append(["None", "None", "None", result['entity_name'], "None", "None", "None", "N/A"])
             continue
         match_found = False
         for location_name, _ in solutions_dict.items():
@@ -246,14 +250,14 @@ def print_all_mappings(
                 match_found = True
                 break
         if not match_found:
-            print_order[4].append(["None", "None", "None", result['entity_name'], top_candidate['name'], top_candidate['id'], top_candidate['dataset']])
+            print_order[4].append(["None", "None", "None", result['entity_name'], top_candidate['name'], top_candidate['id'], top_candidate['dataset'], "N/A"])
     
     tabulate_list = []
     for list in print_order:
         for entry in list:
             tabulate_list.append(entry)
     print(tabulate(tabulate_list, headers=["Location Mention", "Toponym ID", "Toponym Dataset", "Entity Name", 
-                            "Candidate Name", "Candidate ID", "Candidate Dataset"]))
+                            "Candidate Name", "Candidate ID", "Candidate Dataset", "Distance (km)"]))
 
 def convert_geonames(
         geonames_entry: Dict[str, Any]

@@ -124,3 +124,22 @@ The results from this function uses the same format as the base `geoparse()` fun
 ```py
 results = geoparse_pdf(file_path, pdf_parser=ocr_parse, is_wikipedia=True)
 ```
+
+## Output
+
+The output of the geoparser follows the following format.
+
+```py
+results = {
+    "inferred_countries": {"NO": 0.6, "US": 0.2, "SE": 0.2}, # Inferred countries of relevance
+    "inferred_admin1": {"NO": {"21": 0.5, "18": 0.25} "UK": {"ENG": 0.25}}, # inferred first order administrative divisions of relevance
+    "results": {"entity_name": "Norge", "label": "GPE_LOC", "start_char": 35, "end_char": 40, "candidates": [<list of candidates>]}
+}
+```
+
+The results from the geoparser can be converted into a csv file with the following code.
+For each result, it stores the location name, id, coordinates, and dataset it was retrieved from.
+
+```py
+write_csv_results(<path to csv file>, results["results"])
+```
